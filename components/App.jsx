@@ -52,6 +52,25 @@ function downloadCsv(filename,csv){
 }
 
 /* Auto-generate SKU: ZB-YYYYMM-NNNNN */
+/* Forgiving parser for the "Components" bulk-import column.
+   Accepts: "SKU:2;SKU2:1" (correct format), but also tolerates
+   comma-separated lists, missing qty, and mixed separators —
+   so a data-entry mistake doesn't silently break combo readiness. */
+function parseComponentsString(raw){
+  if(!raw)return[];
+  // Normalize: treat both ; and , as separators between components
+  const tokens=String(raw).split(/[;,]/).map(t=>t.trim()).filter(Boolean);
+  const merged={};
+  tokens.forEach(tok=>{
+    const parts=tok.split(":");
+    const sku=(parts[0]||"").trim();
+    const qty=parts.length>1?(Number(parts[1])||1):1;
+    if(!sku)return;
+    merged[sku]=(merged[sku]||0)+qty;
+  });
+  return Object.entries(merged).map(([sku,qty])=>({sku,qty}));
+}
+
 function generateSkuCode(existingSkus){
   const now=new Date();
   const prefix=`ZB-${now.getFullYear()}${String(now.getMonth()+1).padStart(2,"0")}`;
@@ -359,6 +378,13 @@ function Catalog({skus,setSkus,showToast}){
   const [editValues,setEditValues]=useState({});
   const [pendingDelete,setPendingDelete]=useState(null);
   const [query,setQuery]=useState("");
+  const [clearConfirmText,setClearConfirmText]=useState("");
+  const [showClearBox,setShowClearBox]=useState(false);
+
+  function clearAllSkus(){
+    if(clearConfirmText.trim().toUpperCase()!=="DELETE"){showToast("error",'Type "DELETE" exactly to confirm.');return;}
+    setSkus([]);setShowClearBox(false);setClearConfirmText("");showToast("success","All SKUs cleared. 🗑️");
+  }
 
   const filtered=skus.filter(s=>{if(!query.trim())return true;const q=query.toLowerCase();return s.sku.toLowerCase().includes(q)||s.name.toLowerCase().includes(q);});
 
@@ -386,8 +412,35 @@ function Catalog({skus,setSkus,showToast}){
   return(
     <div>
       <SectionHeader title="SKU Catalog" subtitle="Manage products, stock, reorder levels, and procurement costs."
-        action={<PrimaryButton onClick={exportCatalogCsv}><Download size={15}/>Export</PrimaryButton>}
+        action={
+          <div className="flex items-center gap-2">
+            <PrimaryButton onClick={exportCatalogCsv}><Download size={15}/>Export</PrimaryButton>
+            {skus.length>0&&(
+              <button onClick={()=>setShowClearBox(!showClearBox)} className="inline-flex items-center gap-1.5 px-3 py-2 rounded-full text-xs font-bold border-2 transition-colors" style={{borderColor:"#fecaca",color:"#dc2626",fontFamily:F.display}}>
+                <Trash2 size={13}/>Clear All
+              </button>
+            )}
+          </div>
+        }
       />
+
+      {showClearBox&&(
+        <Card className="mb-5" style={{borderColor:"#fecaca",backgroundColor:"#fff5f5"}}>
+          <div className="flex items-start gap-3">
+            <AlertTriangle size={20} style={{color:"#dc2626",flexShrink:0,marginTop:2}}/>
+            <div className="flex-1">
+              <p className="font-bold text-sm mb-1" style={{color:"#991b1b",fontFamily:F.display}}>Delete all {skus.length} SKUs?</p>
+              <p className="text-xs mb-3" style={{color:"#991b1b",fontFamily:F.body}}>This cannot be undone. Any combos referencing these SKUs will show "SKU not found" until you re-import. Useful for wiping test data before a fresh Bulk Import.</p>
+              <div className="flex items-center gap-2 flex-wrap">
+                <Input placeholder='Type "DELETE" to confirm' value={clearConfirmText} onChange={e=>setClearConfirmText(e.target.value)} className="max-w-xs" style={{borderColor:"#fecaca"}}/>
+                <button onClick={clearAllSkus} className="px-4 py-2.5 rounded-xl text-sm font-bold text-white" style={{backgroundColor:"#dc2626",fontFamily:F.display}}>Delete All SKUs</button>
+                <button onClick={()=>{setShowClearBox(false);setClearConfirmText("");}} className="text-sm font-bold" style={{color:C.lightText,fontFamily:F.body}}>Cancel</button>
+              </div>
+            </div>
+          </div>
+        </Card>
+      )}
+
       <Card className="mb-6">
         <h3 className="font-bold text-lg mb-4" style={{fontFamily:F.display,color:C.darkText}}>Add a New SKU</h3>
         <div className="space-y-4">
@@ -457,7 +510,14 @@ function CombosView({skus,combos,setCombos,showToast}){
   const [editId,setEditId]=useState(null);
   const [pendingDelete,setPendingDelete]=useState(null);
   const [expanded,setExpanded]=useState({});
+  const [clearConfirmText,setClearConfirmText]=useState("");
+  const [showClearBox,setShowClearBox]=useState(false);
   const skuMap=useMemo(()=>Object.fromEntries(skus.map(s=>[s.sku,s])),[skus]);
+
+  function clearAllCombos(){
+    if(clearConfirmText.trim().toUpperCase()!=="DELETE"){showToast("error",'Type "DELETE" exactly to confirm.');return;}
+    setCombos([]);setShowClearBox(false);setClearConfirmText("");showToast("success","All combos cleared. 🗑️");
+  }
 
   function saveCombo(){
     const code=form.sku.trim(),name=form.name.trim();
@@ -479,8 +539,33 @@ function CombosView({skus,combos,setCombos,showToast}){
   return(
     <div>
       <SectionHeader title="Gift Combos" subtitle="Define gift bundles from your SKUs."
-        action={combos.length>0?<PrimaryButton onClick={exportCombosCsv}><Download size={15}/>Export</PrimaryButton>:null}
+        action={combos.length>0?(
+          <div className="flex items-center gap-2">
+            <PrimaryButton onClick={exportCombosCsv}><Download size={15}/>Export</PrimaryButton>
+            <button onClick={()=>setShowClearBox(!showClearBox)} className="inline-flex items-center gap-1.5 px-3 py-2 rounded-full text-xs font-bold border-2 transition-colors" style={{borderColor:"#fecaca",color:"#dc2626",fontFamily:F.display}}>
+              <Trash2 size={13}/>Clear All
+            </button>
+          </div>
+        ):null}
       />
+
+      {showClearBox&&(
+        <Card className="mb-5" style={{borderColor:"#fecaca",backgroundColor:"#fff5f5"}}>
+          <div className="flex items-start gap-3">
+            <AlertTriangle size={20} style={{color:"#dc2626",flexShrink:0,marginTop:2}}/>
+            <div className="flex-1">
+              <p className="font-bold text-sm mb-1" style={{color:"#991b1b",fontFamily:F.display}}>Delete all {combos.length} combos?</p>
+              <p className="text-xs mb-3" style={{color:"#991b1b",fontFamily:F.body}}>This cannot be undone. Your SKU catalog stays untouched — only combo bundles are removed. Useful for wiping test data before a fresh Bulk Import.</p>
+              <div className="flex items-center gap-2 flex-wrap">
+                <Input placeholder='Type "DELETE" to confirm' value={clearConfirmText} onChange={e=>setClearConfirmText(e.target.value)} className="max-w-xs" style={{borderColor:"#fecaca"}}/>
+                <button onClick={clearAllCombos} className="px-4 py-2.5 rounded-xl text-sm font-bold text-white" style={{backgroundColor:"#dc2626",fontFamily:F.display}}>Delete All Combos</button>
+                <button onClick={()=>{setShowClearBox(false);setClearConfirmText("");}} className="text-sm font-bold" style={{color:C.lightText,fontFamily:F.body}}>Cancel</button>
+              </div>
+            </div>
+          </div>
+        </Card>
+      )}
+
       <Card className="mb-6">
         <h3 className="font-bold text-lg mb-4" style={{fontFamily:F.display,color:C.darkText}}>{editId?"Edit Combo":"Create a Gift Combo"}</h3>
         {skus.length===0?<p className="text-sm" style={{color:C.lightText}}>Add SKUs to your Catalog first.</p>:(
@@ -553,9 +638,27 @@ function CombosView({skus,combos,setCombos,showToast}){
 function BulkImportView({skus,combos,setSkus,setCombos,showToast}){
   const [stage,setStage]=useState("idle");const [fileName,setFileName]=useState("");
   const [preview,setPreview]=useState({skus:[],combos:[]});const ref=useRef(null);
+  const [importMode,setImportMode]=useState("merge"); // "merge" | "replace"
+
+  // Detect component SKUs referenced by imported combos that don't exist anywhere
+  // (not in current catalog, not in the SKUs sheet being imported) — catches
+  // formatting mistakes like commas instead of semicolons in the Components column.
+  const unmatchedComponents=useMemo(()=>{
+    const known=new Set([...skus.map(s=>s.sku),...preview.skus.map(s=>s.sku)]);
+    const bad=new Map(); // sku -> [combo names]
+    preview.combos.forEach(c=>{
+      c.components?.forEach(comp=>{
+        if(!known.has(comp.sku)){
+          if(!bad.has(comp.sku))bad.set(comp.sku,[]);
+          bad.get(comp.sku).push(c.name);
+        }
+      });
+    });
+    return Array.from(bad.entries()).map(([sku,combos])=>({sku,combos}));
+  },[preview,skus]);
   function parseImportData(skuRows,comboRows=[]){
     const iSkus=skuRows.filter(r=>r.SKU&&r.Name).map(r=>({sku:String(r.SKU).trim(),name:String(r.Name).trim(),stock:Number(r.Stock)||0,reorderLevel:Number(r["Reorder Level"])||0,procurementCost:Number(r["Procurement Cost"])||0,images:[]}));
-    const iCombos=comboRows.filter(r=>r["Combo Code"]&&r["Combo Name"]).map(r=>({id:Date.now().toString()+Math.random(),sku:String(r["Combo Code"]).trim(),name:String(r["Combo Name"]).trim(),components:String(r.Components||"").split(";").filter(Boolean).map(c=>{const p=c.split(":");return{sku:p[0].trim(),qty:Number(p[1])||1};}),images:[]}));
+    const iCombos=comboRows.filter(r=>r["Combo Code"]&&r["Combo Name"]).map(r=>({id:Date.now().toString()+Math.random(),sku:String(r["Combo Code"]).trim(),name:String(r["Combo Name"]).trim(),components:parseComponentsString(r.Components),images:[]}));
     setPreview({skus:iSkus,combos:iCombos});setStage("preview");
   }
   function processFile(file){
@@ -565,6 +668,15 @@ function BulkImportView({skus,combos,setSkus,setCombos,showToast}){
     else showToast("error","Upload a .csv or .xlsx file.");
   }
   function confirmImport(){
+    if(importMode==="replace"){
+      // Replace mode: wipe existing data, use only what's in the file
+      setSkus(preview.skus);
+      setCombos(preview.combos.map(c=>({...c,id:c.id||Date.now().toString()+Math.random()})));
+      setStage("imported");
+      showToast("success",`Replaced catalog: ${preview.skus.length} SKUs & ${preview.combos.length} combos. 🔄`);
+      return;
+    }
+    // Merge mode: update matches, add new
     const ms=[...skus],mc=[...combos];
     preview.skus.forEach(n=>{const i=ms.findIndex(s=>s.sku===n.sku);i>=0?ms[i]={...ms[i],...n}:ms.push(n);});
     preview.combos.forEach(n=>{const i=mc.findIndex(c=>c.sku===n.sku);i>=0?mc[i]={...mc[i],...n}:mc.push(n);});
@@ -584,7 +696,51 @@ function BulkImportView({skus,combos,setSkus,setCombos,showToast}){
         {stage==="idle"&&(<div className="rounded-2xl border-2 border-dashed p-8 text-center" style={{borderColor:C.zenkyPink,backgroundColor:"#FFF8FC"}}><Upload size={32} className="mx-auto mb-3" style={{color:C.zenkyPink}}/><p className="font-bold mb-4" style={{color:C.darkText,fontFamily:F.display}}>Choose your Excel or CSV file</p><input ref={ref} type="file" accept=".csv,.xlsx,.xls" className="hidden" onChange={e=>processFile(e.target.files[0])}/><PrimaryButton onClick={()=>ref.current?.click()}><Upload size={15}/>Select File</PrimaryButton></div>)}
         {stage==="preview"&&(<div><div className="flex items-center justify-between mb-4 flex-wrap gap-2"><div><h3 className="font-bold text-lg" style={{fontFamily:F.display,color:C.darkText}}>Preview</h3><p className="text-sm" style={{color:C.lightText}}>{fileName} — {preview.skus.length} SKUs, {preview.combos.length} combos</p></div><button onClick={reset} className="text-sm font-bold" style={{color:C.lightText}}>Change file</button></div>
           {preview.skus.length>0&&<div className="overflow-x-auto mb-4"><table className="w-full text-xs"><thead><tr style={{color:C.lightText}}><th className="py-2 pr-3 text-left font-bold uppercase">SKU</th><th className="py-2 pr-3 text-left font-bold uppercase">Name</th><th className="py-2 pr-3 text-left font-bold uppercase">Stock</th><th className="py-2 pr-3 text-left font-bold uppercase">Cost</th></tr></thead><tbody>{preview.skus.slice(0,5).map(s=><tr key={s.sku} className="border-t" style={{borderColor:C.border}}><td className="py-1.5 pr-3" style={{fontFamily:F.mono,fontWeight:600}}>{s.sku}</td><td className="py-1.5 pr-3">{s.name}</td><td className="py-1.5 pr-3" style={{fontFamily:F.mono}}>{s.stock}</td><td className="py-1.5 pr-3" style={{fontFamily:F.mono}}>{fmtINR(s.procurementCost||0)}</td></tr>)}</tbody></table>{preview.skus.length>5&&<p className="text-xs mt-1" style={{color:C.lightText}}>…and {preview.skus.length-5} more</p>}</div>}
-          <div className="flex gap-2"><PrimaryButton onClick={confirmImport}><Check size={15}/>Confirm Import</PrimaryButton><button onClick={reset} className="text-sm font-bold" style={{color:C.lightText}}>Cancel</button></div></div>)}
+
+          {unmatchedComponents.length>0&&(
+            <div className="mb-4 p-3.5 rounded-xl" style={{backgroundColor:"#fff5f5",border:"2px solid #fecaca"}}>
+              <div className="flex items-start gap-2">
+                <AlertTriangle size={16} style={{color:"#dc2626",flexShrink:0,marginTop:2}}/>
+                <div className="flex-1 min-w-0">
+                  <p className="font-bold text-sm mb-1.5" style={{color:"#991b1b",fontFamily:F.display}}>
+                    {unmatchedComponents.length} component SKU{unmatchedComponents.length!==1?"s":""} not found in catalog
+                  </p>
+                  <p className="text-xs mb-2" style={{color:"#991b1b"}}>These combos will show "Missing" until fixed. Common cause: the Components column used commas instead of semicolons (e.g. "SKU1,SKU2" instead of "SKU1:1;SKU2:1").</p>
+                  <div className="space-y-1 max-h-32 overflow-y-auto">
+                    {unmatchedComponents.map(u=>(
+                      <div key={u.sku} className="text-xs" style={{fontFamily:F.mono,color:"#991b1b"}}>
+                        <strong>{u.sku.length>60?u.sku.slice(0,60)+"…":u.sku}</strong> — used in: {u.combos.join(", ")}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Import mode toggle */}
+          <div className="mb-4 p-3 rounded-xl" style={{backgroundColor:C.bgLight}}>
+            <label className="text-xs font-bold uppercase block mb-2" style={{color:C.lightText,fontFamily:F.body,letterSpacing:"0.02em"}}>Import Mode</label>
+            <div className="grid grid-cols-2 gap-2">
+              <button onClick={()=>setImportMode("merge")} className="p-3 rounded-xl border-2 text-left transition-all" style={{borderColor:importMode==="merge"?C.zenkyPurple:C.border,backgroundColor:importMode==="merge"?"#F3EEFF":C.softWhite}}>
+                <div className="font-bold text-sm flex items-center gap-1.5" style={{color:importMode==="merge"?C.zenkyPurple:C.darkText,fontFamily:F.display}}>{importMode==="merge"&&<Check size={14}/>}Merge</div>
+                <div className="text-xs mt-0.5" style={{color:C.lightText}}>Update matches, keep everything else</div>
+              </button>
+              <button onClick={()=>setImportMode("replace")} className="p-3 rounded-xl border-2 text-left transition-all" style={{borderColor:importMode==="replace"?"#dc2626":C.border,backgroundColor:importMode==="replace"?"#fff5f5":C.softWhite}}>
+                <div className="font-bold text-sm flex items-center gap-1.5" style={{color:importMode==="replace"?"#dc2626":C.darkText,fontFamily:F.display}}>{importMode==="replace"&&<Check size={14}/>}Replace All</div>
+                <div className="text-xs mt-0.5" style={{color:C.lightText}}>⚠️ Wipes existing catalog first</div>
+              </button>
+            </div>
+          </div>
+
+          {importMode==="replace"&&(
+            <div className="mb-4 flex items-start gap-2 p-3 rounded-xl text-xs" style={{backgroundColor:"#fff5f5",color:"#991b1b"}}>
+              <AlertTriangle size={14} className="flex-shrink-0 mt-0.5"/>
+              <span>Replace mode will delete all {skus.length} current SKUs and {combos.length} current combos, then load only what's in this file. Ideal for repeated test uploads.</span>
+            </div>
+          )}
+
+          <div className="flex gap-2"><PrimaryButton onClick={confirmImport} tone={importMode==="replace"?"pink":undefined}><Check size={15}/>{importMode==="replace"?"Replace & Import":"Confirm Import"}</PrimaryButton><button onClick={reset} className="text-sm font-bold" style={{color:C.lightText}}>Cancel</button></div></div>)}
         {stage==="imported"&&(<div className="text-center py-8"><Check size={32} className="mx-auto mb-3" style={{color:C.mintGreen}}/><p className="font-bold text-lg" style={{color:C.darkText,fontFamily:F.display}}>Import complete!</p><p className="text-sm mt-1" style={{color:C.lightText}}>{preview.skus.length} SKUs & {preview.combos.length} combos added.</p><div className="mt-5"><PrimaryButton onClick={reset}><Upload size={15}/>Import another</PrimaryButton></div></div>)}
       </Card>
     </div>
