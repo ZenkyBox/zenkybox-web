@@ -112,10 +112,49 @@ function detectExtraColumns(headerKeys){
   return{
     dateKey:find(/purchase.?date|order.?date/i),
     buyerKey:find(/buyer.?name|buyer.?email|customer.?name/i),
+    orderIdKey:find(/^amazon.?order.?id$|^order.?id$/i),
     cityKey:find(/ship.?city/i),
     stateKey:find(/ship.?state|ship.?region/i),
     priceKey:find(/item.?price|unit.?price|^price$/i),
   };
+}
+
+/* pad a numeric-looking value back to 2 digits — Excel silently drops leading
+   zeros from split-off timestamp fragments (e.g. "01" becomes 1) */
+function pad2(v){const s=String(v??"").trim();return s.length===1?"0"+s:s;}
+
+/* Some Amazon exports (via certain conversion tools) split ISO timestamp columns
+   like "purchase-date" and "last-updated-date" into 4 extra cells each, because the
+   colons in "2026-07-05T06:29:52+00:00" get treated as a delimiter somewhere in the
+   pipeline. This pushes every column after those date fields to the wrong position —
+   including sku and quantity — with the header row staying correctly labeled.
+   This function detects that exact signature and reconstructs the original columns
+   automatically, so the file can be uploaded exactly as exported, with no manual fixing. */
+function repairShiftedColumns(headerRow,dataRows){
+  const dateIdxs=headerRow.map((h,i)=>/date/i.test(h)?i:-1).filter(i=>i>=0);
+  if(!dateIdxs.length)return{repaired:false,rows:dataRows};
+
+  const excesses=dataRows.map(r=>r.length-headerRow.length).filter(e=>e>0);
+  if(!excesses.length)return{repaired:false,rows:dataRows}; // already aligned — nothing to do
+
+  const expected=dateIdxs.length*3; // each split date column contributes 3 extra cells (4 parts - 1)
+  const consistent=excesses.every(e=>e===expected);
+  if(!consistent)return{repaired:false,rows:dataRows,reason:"inconsistent"};
+
+  const repairedRows=dataRows.map(raw=>{
+    if(raw.length<=headerRow.length)return raw; // this particular row wasn't affected
+    const out=[];let pos=0;
+    headerRow.forEach((h,hi)=>{
+      if(dateIdxs.includes(hi)){
+        const parts=raw.slice(pos,pos+4);pos+=4;
+        out.push(`${parts[0]}:${pad2(parts[1])}:${parts[2]}:${pad2(parts[3])}`);
+      }else{
+        out.push(raw[pos]);pos+=1;
+      }
+    });
+    return out;
+  });
+  return{repaired:true,rows:repairedRows};
 }
 
 function aggregateSalesLines(lines,groupFn,skuMap,comboMap,sortMode="revenue"){
@@ -838,6 +877,10 @@ function BulkImportView({skus,combos,setSkus,setCombos,showToast,logActivity}){
           <div><p className="font-bold mb-1">SKUs sheet:</p><code className="block bg-gray-100 p-2 rounded text-xs" style={{fontFamily:F.mono}}>SKU | Name | Stock | Reorder Level | Procurement Cost</code></div>
           <div><p className="font-bold mb-1">Combos sheet:</p><code className="block bg-gray-100 p-2 rounded text-xs" style={{fontFamily:F.mono}}>Combo Code | Combo Name | Components (SKU001:2;SKU002:1)</code></div>
         </div>
+        <div className="flex gap-4 mt-3">
+          <button onClick={()=>downloadCsv("sku_import_template.csv","SKU,Name,Stock,Reorder Level,Procurement Cost\nZB-ST-MBK-002,Magnetic Bookmark Set,100,20,45\n")} className="inline-flex items-center gap-1.5 text-xs font-bold" style={{color:C.zenkyOrange,fontFamily:F.body}}><Download size={13}/>Download SKU template</button>
+          <button onClick={()=>downloadCsv("combo_import_template.csv","Combo Code,Combo Name,Components\nCOMBO-A,Starter Gift Set,ZB-ST-MBK-002:1;ZB-CP-ZPP-001:2\n")} className="inline-flex items-center gap-1.5 text-xs font-bold" style={{color:C.zenkyOrange,fontFamily:F.body}}><Download size={13}/>Download Combo template</button>
+        </div>
       </Card>
       <Card>
         {stage==="idle"&&(<div className="rounded-2xl border-2 border-dashed p-8 text-center" style={{borderColor:C.zenkyPink,backgroundColor:"#FFF8FC"}}><Upload size={32} className="mx-auto mb-3" style={{color:C.zenkyPink}}/><p className="font-bold mb-4" style={{color:C.darkText,fontFamily:F.display}}>Choose your Excel or CSV file</p><input ref={ref} type="file" accept=".csv,.xlsx,.xls" className="hidden" onChange={e=>processFile(e.target.files[0])}/><PrimaryButton onClick={()=>ref.current?.click()}><Upload size={15}/>Select File</PrimaryButton></div>)}
@@ -896,8 +939,10 @@ function BulkImportView({skus,combos,setSkus,setCombos,showToast,logActivity}){
 
 /* ═══ UPLOAD SALES ═══ */
 function UploadView({skus,combos,setSkus,reports,setReports,salesLines,setSalesLines,logActivity,showToast}){
+  const [channel,setChannel]=useState("amazon"); // "amazon" | "website"
   const [stage,setStage]=useState("idle");const [fileName,setFileName]=useState("");
   const [aggregated,setAggregated]=useState([]);const [rawRows,setRawRows]=useState([]);const [extraCols,setExtraCols]=useState({});
+  const [repairNote,setRepairNote]=useState(null);
   const [weekLabel,setWeekLabel]=useState("");const ref=useRef(null);
   const skuMap=useMemo(()=>Object.fromEntries(skus.map(s=>[s.sku,s])),[skus]);
   const comboMap=useMemo(()=>Object.fromEntries(combos.map(c=>[c.sku,c])),[combos]);
@@ -908,16 +953,44 @@ function UploadView({skus,combos,setSkus,reports,setReports,salesLines,setSalesL
     if(!sk||!qk){showToast("error",'Expected "sku" and "quantity" columns.');return;}
     const extra=detectExtraColumns(hk);
     setExtraCols(extra);
-    setRawRows(rows.map(r=>({sku:String(r[sk]||"").trim(),qty:parseFloat(r[qk]),date:extra.dateKey?r[extra.dateKey]:null,buyer:extra.buyerKey?String(r[extra.buyerKey]||"").trim():"",city:extra.cityKey?String(r[extra.cityKey]||"").trim():"",state:extra.stateKey?String(r[extra.stateKey]||"").trim():"",price:extra.priceKey?parseFloat(r[extra.priceKey]):null})).filter(r=>r.sku&&!isNaN(r.qty)));
+    setRawRows(rows.map(r=>({sku:String(r[sk]||"").trim(),qty:parseFloat(r[qk]),date:extra.dateKey?r[extra.dateKey]:null,orderId:extra.orderIdKey?String(r[extra.orderIdKey]||"").trim():"",buyer:extra.buyerKey?String(r[extra.buyerKey]||"").trim():"",city:extra.cityKey?String(r[extra.cityKey]||"").trim():"",state:extra.stateKey?String(r[extra.stateKey]||"").trim():"",price:extra.priceKey?parseFloat(r[extra.priceKey]):null})).filter(r=>r.sku&&!isNaN(r.qty)));
     const totals={};rows.forEach(r=>{const code=String(r[sk]||"").trim(),qty=parseFloat(r[qk]);if(!code||isNaN(qty))return;totals[code]=(totals[code]||0)+qty;});
     setAggregated(Object.entries(totals).map(([code,qty])=>{const combo=combos.find(c=>c.sku===code),sku=skuMap[code];const mt=combo?"combo":sku?"direct":"unknown";return{code,qty,matchType:mt,matchName:combo?.name||sku?.name||"Not in catalog"};}));setStage("parsed");
   }
-  function handleFile(file){
-    if(!file)return;setFileName(file.name);const ext=file.name.split(".").pop().toLowerCase();
-    if(ext==="csv")Papa.parse(file,{header:true,skipEmptyLines:true,complete:res=>processRows(res.data),error:()=>showToast("error","Could not parse CSV.")});
-    else if(ext==="xlsx"||ext==="xls"){const r=new FileReader();r.onload=e=>{try{const wb=XLSX.read(e.target.result,{type:"array"});processRows(XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]],{defval:""}));}catch{showToast("error","Could not parse spreadsheet.");}};r.readAsArrayBuffer(file);}
-    else showToast("error","Upload a .csv or .xlsx file.");
+
+  /* Turns raw array-of-arrays (with header row first) into array-of-objects,
+     auto-repairing Amazon's colon-split date corruption first if it's present. */
+  function fromRawGrid(grid){
+    if(!grid?.length)return[];
+    const headerRow=grid[0].map(h=>String(h??"").trim());
+    let dataRows=grid.slice(1).filter(r=>r.some(v=>v!==""&&v!=null));
+    if(channel==="amazon"){
+      const{repaired,rows:fixed,reason}=repairShiftedColumns(headerRow,dataRows);
+      if(repaired){
+        dataRows=fixed;
+        setRepairNote({type:"success",msg:"Detected and auto-corrected shifted columns caused by split timestamp fields — uploaded exactly as exported, no manual fixing needed."});
+      }else if(reason==="inconsistent"){
+        setRepairNote({type:"warning",msg:"Columns looked misaligned but didn't match the usual pattern — proceeding with the file as-is. Double-check the SKU/Quantity preview below before applying."});
+      }else{
+        setRepairNote(null);
+      }
+    }else{
+      setRepairNote(null);
+    }
+    return dataRows.map(r=>Object.fromEntries(headerRow.map((h,i)=>[h,r[i]])));
   }
+
+  function handleFile(file){
+    if(!file)return;setFileName(file.name);setRepairNote(null);const ext=file.name.split(".").pop().toLowerCase();
+    if(ext==="csv"){
+      Papa.parse(file,{header:false,skipEmptyLines:true,complete:res=>processRows(fromRawGrid(res.data)),error:()=>showToast("error","Could not parse CSV.")});
+    }else if(ext==="xlsx"||ext==="xls"){
+      const r=new FileReader();
+      r.onload=e=>{try{const wb=XLSX.read(e.target.result,{type:"array"});const grid=XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]],{header:1,defval:""});processRows(fromRawGrid(grid));}catch{showToast("error","Could not parse spreadsheet.");}};
+      r.readAsArrayBuffer(file);
+    }else showToast("error","Upload a .csv or .xlsx file.");
+  }
+
   function applyReport(){
     if(!weekLabel.trim()){showToast("error","Add a report label.");return;}
     const skuBefore={};skus.forEach(s=>skuBefore[s.sku]=s.stock);
@@ -925,12 +998,11 @@ function UploadView({skus,combos,setSkus,reports,setReports,salesLines,setSalesL
     aggregated.forEach(({code,qty,matchType})=>{if(matchType==="combo"){const c=combos.find(x=>x.sku===code);c?.components?.forEach(comp=>{if(updated[comp.sku])updated[comp.sku].stock=Math.max(0,updated[comp.sku].stock-comp.qty*qty);});}else if(matchType==="direct"&&updated[code])updated[code].stock=Math.max(0,updated[code].stock-qty);});
     const newSkus=Object.values(updated);const bMap=Object.fromEntries(skus.map(s=>[s.sku,s])),aMap=Object.fromEntries(newSkus.map(s=>[s.sku,s]));
     const reportId=Date.now().toString();
-    const report={id:reportId,label:weekLabel.trim(),fileName,appliedAt:new Date().toISOString(),
+    const report={id:reportId,label:weekLabel.trim(),fileName,channel,appliedAt:new Date().toISOString(),
       skuLines:newSkus.map(s=>({sku:s.sku,name:s.name,opening:skuBefore[s.sku]??s.stock,sold:(skuBefore[s.sku]??s.stock)-s.stock,closing:s.stock,reorderLevel:s.reorderLevel,status:stockStatus(s)})),
       comboLines:combos.map(c=>({sku:c.sku,name:c.name,readyBefore:comboReadiness(c,bMap).ready,readyAfter:comboReadiness(c,aMap).ready,bottleneck:comboReadiness(c,aMap).bottleneck})),
       unmatched:aggregated.filter(a=>a.matchType==="unknown")};
 
-    // Build detailed sales lines (for ZenkyBox Sales Report analytics)
     const newLines=rawRows.map((row,i)=>{
       const combo=comboMap[row.sku],sku=skuMap[row.sku];
       const matchType=combo?"combo":sku?"direct":"unknown";
@@ -938,22 +1010,66 @@ function UploadView({skus,combos,setSkus,reports,setReports,salesLines,setSalesL
       const unitCost=unitCostOf(row.sku,matchType,skuMap,comboMap);
       const cost=unitCost*row.qty;
       const revenue=row.price!=null&&!isNaN(row.price)?row.price*row.qty:0;
-      return{id:`${reportId}-${i}`,reportId,date:row.date||report.appliedAt,sku:row.sku,name,matchType,qty:row.qty,unitCost,cost,revenue,earning:revenue-cost,buyer:row.buyer||"",city:row.city||"",state:row.state||""};
+      return{id:`${reportId}-${i}`,reportId,channel,date:row.date||report.appliedAt,sku:row.sku,name,matchType,qty:row.qty,unitCost,cost,revenue,earning:revenue-cost,orderId:row.orderId||"",buyer:row.buyer||"",city:row.city||"",state:row.state||""};
     });
 
     setSkus(newSkus);setReports([report,...reports]);setSalesLines([...salesLines,...newLines]);
-    logActivity?.("Sales report applied",`"${weekLabel.trim()}" — ${fileName} (${aggregated.length} codes, ${newLines.length} order lines)`);
+    logActivity?.("Sales report applied",`[${channel}] "${weekLabel.trim()}" — ${fileName} (${aggregated.length} codes, ${newLines.length} order lines)`);
     setStage("applied");showToast("success","Inventory updated. 📊");
   }
-  function reset(){setStage("idle");setAggregated([]);setRawRows([]);setFileName("");setWeekLabel("");if(ref.current)ref.current.value="";}
-  const hasExtras=extraCols.priceKey||extraCols.buyerKey||extraCols.cityKey;
+  function reset(){setStage("idle");setAggregated([]);setRawRows([]);setFileName("");setWeekLabel("");setRepairNote(null);if(ref.current)ref.current.value="";}
+
+  function downloadWebsiteTemplate(){
+    const csv="sku,quantity,item-price,purchase-date,buyer-name,buyer-email,ship-city,ship-state\n"+
+      "ZB-ST-MBK-002,2,99,2026-07-05T10:30:00,Anita Sharma,anita@example.com,Mumbai,MAHARASHTRA\n"+
+      "COMBO-A,1,499,2026-07-05T14:15:00,Rahul Verma,rahul@example.com,Delhi,DELHI\n";
+    downloadCsv("website_sales_template.csv",csv);
+  }
+  function downloadAmazonReference(){
+    const csv="amazon-order-id,sku,quantity,item-price,purchase-date,ship-city,ship-state\n"+
+      "402-6139183-3052307,ZB-ST-MBK-002,1,99,2026-07-05T06:29:52+00:00,PUNE,MAHARASHTRA\n"+
+      "171-7143323-7105914,OE-D495-NPMY,1,499,2026-07-04T18:56:02+00:00,PATNA,BIHAR\n";
+    downloadCsv("amazon_sales_reference.csv",csv);
+  }
+
+  const hasExtras=extraCols.priceKey||extraCols.buyerKey||extraCols.cityKey||extraCols.orderIdKey;
   return(
     <div>
-      <SectionHeader title="Upload Sales Report" subtitle="Amazon weekly sales CSV/XLSX — combos auto-deduct component SKUs."/>
+      <SectionHeader title="Upload Sales Report" subtitle="Amazon reports upload exactly as exported — combos auto-deduct component SKUs."/>
+
+      {/* Channel selector */}
+      <div className="flex gap-2 mb-5">
+        {[{id:"amazon",label:"Amazon Seller Report"},{id:"website",label:"Website Sales"}].map(c=>(
+          <button key={c.id} onClick={()=>{setChannel(c.id);reset();}} className="flex-1 sm:flex-none px-4 py-2.5 rounded-full text-sm font-bold transition-colors" style={{backgroundColor:channel===c.id?C.zenkyPurple:C.softWhite,color:channel===c.id?C.softWhite:C.darkText,border:`2px solid ${channel===c.id?C.zenkyPurple:C.border}`,fontFamily:F.display}}>
+            {c.label}
+          </button>
+        ))}
+      </div>
+
       <Card>
-        {stage==="idle"&&(<div className="rounded-2xl border-2 border-dashed p-8 text-center" style={{borderColor:C.zenkyPink,backgroundColor:"#FFF8FC"}}><Upload size={32} className="mx-auto mb-3" style={{color:C.zenkyPink}}/><p className="font-bold mb-4" style={{color:C.darkText,fontFamily:F.display}}>Choose your Amazon weekly sales report</p><input ref={ref} type="file" accept=".csv,.xlsx,.xls" className="hidden" onChange={e=>handleFile(e.target.files[0])}/><PrimaryButton onClick={()=>ref.current?.click()}><Upload size={15}/>Select File</PrimaryButton></div>)}
+        {stage==="idle"&&(
+          <div>
+            <div className="rounded-2xl border-2 border-dashed p-8 text-center" style={{borderColor:C.zenkyPink,backgroundColor:"#FFF8FC"}}>
+              <Upload size={32} className="mx-auto mb-3" style={{color:C.zenkyPink}}/>
+              <p className="font-bold mb-1" style={{color:C.darkText,fontFamily:F.display}}>
+                {channel==="amazon"?"Choose your Amazon sales report — upload it exactly as downloaded":"Choose your website sales export"}
+              </p>
+              <p className="text-xs mb-4" style={{color:C.lightText}}>
+                {channel==="amazon"?"No need to fix or reformat the file first — shifted/corrupted columns are detected and repaired automatically.":"CSV or Excel with sku, quantity, price, buyer, and location columns."}
+              </p>
+              <input ref={ref} type="file" accept=".csv,.xlsx,.xls" className="hidden" onChange={e=>handleFile(e.target.files[0])}/>
+              <PrimaryButton onClick={()=>ref.current?.click()}><Upload size={15}/>Select File</PrimaryButton>
+              <div className="mt-4">
+                <button onClick={channel==="amazon"?downloadAmazonReference:downloadWebsiteTemplate} className="inline-flex items-center gap-1.5 text-xs font-bold" style={{color:C.zenkyOrange,fontFamily:F.body}}>
+                  <Download size={13}/>{channel==="amazon"?"Download format reference":"Download blank template"}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
         {stage==="parsed"&&(<div><div className="flex items-center justify-between mb-4 flex-wrap gap-2"><span className="text-sm" style={{color:C.darkText}}>Parsed <strong>{fileName}</strong> — {aggregated.length} codes</span><button onClick={reset} className="text-sm font-bold" style={{color:C.lightText}}>Change file</button></div>
-          {hasExtras&&<div className="mb-3 p-2.5 rounded-xl text-xs flex items-center gap-2" style={{backgroundColor:"#F0FDE8",color:"#166534"}}><Check size={14}/>Detected {[extraCols.priceKey&&"price",extraCols.buyerKey&&"buyer",extraCols.cityKey&&"location",extraCols.dateKey&&"date"].filter(Boolean).join(", ")} — will populate ZenkyBox Sales Report.</div>}
+          {repairNote&&<div className="mb-3 p-2.5 rounded-xl text-xs flex items-center gap-2" style={{backgroundColor:repairNote.type==="success"?"#F0FDE8":"#FFF3E6",color:repairNote.type==="success"?"#166534":"#9a5b0f"}}><Check size={14}/>{repairNote.msg}</div>}
+          {hasExtras&&<div className="mb-3 p-2.5 rounded-xl text-xs flex items-center gap-2" style={{backgroundColor:"#F0FDE8",color:"#166534"}}><Check size={14}/>Detected {[extraCols.priceKey&&"price",extraCols.buyerKey&&"buyer",extraCols.cityKey&&"location",extraCols.dateKey&&"date",extraCols.orderIdKey&&"order ID"].filter(Boolean).join(", ")} — will populate ZenkyBox Sales Report.</div>}
           {!hasExtras&&<div className="mb-3 p-2.5 rounded-xl text-xs flex items-center gap-2" style={{backgroundColor:C.bgLight,color:C.lightText}}><AlertTriangle size={14}/>No price/buyer/location columns detected — stock will update, but Sales Report earning/buyer/location breakdowns won't have data for this upload.</div>}
           <div className="overflow-x-auto mb-4"><table className="w-full text-sm"><thead><tr style={{color:C.lightText}}><th className="py-2 pr-3 text-left font-bold text-xs uppercase">Code</th><th className="py-2 pr-3 text-left font-bold text-xs uppercase">Qty</th><th className="py-2 pr-3 text-left font-bold text-xs uppercase">Type</th><th className="py-2 pr-3 text-left font-bold text-xs uppercase">Name</th></tr></thead><tbody>{aggregated.map(a=><tr key={a.code} className="border-t" style={{borderColor:C.border}}><td className="py-2 pr-3" style={{fontFamily:F.mono,fontWeight:600}}>{a.code}</td><td className="py-2 pr-3" style={{fontFamily:F.mono}}>{fmt(a.qty)}</td><td className="py-2 pr-3">{a.matchType==="combo"?<Stamp tone="mint">Combo</Stamp>:a.matchType==="direct"?<Stamp tone="purple">SKU</Stamp>:<Stamp tone="pink">Unknown</Stamp>}</td><td className="py-2 pr-3" style={{color:a.matchType==="unknown"?C.zenkyPink:C.darkText}}>{a.matchName}</td></tr>)}</tbody></table></div>
           <div className="flex items-end gap-3 flex-wrap"><div className="w-full sm:w-64"><label className="text-xs font-bold block mb-1" style={{color:C.lightText}}>Report label</label><Input placeholder="e.g. Week of Jun 16–22" value={weekLabel} onChange={e=>setWeekLabel(e.target.value)}/></div><PrimaryButton onClick={applyReport}><Check size={15}/>Apply to inventory</PrimaryButton></div></div>)}
@@ -1010,7 +1126,7 @@ function ReportsView({reports,skus,combos}){
             return(
               <Card key={r.id}>
                 <button className="w-full flex items-center justify-between gap-3 text-left" onClick={()=>setOpenId(isOpen?null:r.id)}>
-                  <div className="flex items-center gap-2">{isOpen?<ChevronDown size={16}/>:<ChevronRight size={16}/>}<div><div className="font-bold text-sm" style={{color:C.darkText,fontFamily:F.display}}>{r.label}</div><div className="text-xs" style={{color:C.lightText,fontFamily:F.mono}}>Applied {new Date(r.appliedAt).toLocaleDateString()} · {r.fileName}</div></div></div>
+                  <div className="flex items-center gap-2">{isOpen?<ChevronDown size={16}/>:<ChevronRight size={16}/>}<div><div className="font-bold text-sm flex items-center gap-2" style={{color:C.darkText,fontFamily:F.display}}>{r.label}{r.channel&&<Stamp tone={r.channel==="amazon"?"orange":"blue"}>{r.channel}</Stamp>}</div><div className="text-xs" style={{color:C.lightText,fontFamily:F.mono}}>Applied {new Date(r.appliedAt).toLocaleDateString()} · {r.fileName}</div></div></div>
                   <div className="flex items-center gap-2 flex-wrap justify-end">{lowCount>0&&<Stamp tone="orange">{lowCount} low</Stamp>}{shortCombos>0&&<Stamp tone="pink">{shortCombos} short</Stamp>}{r.unmatched?.length>0&&<Stamp tone="purple">{r.unmatched.length} unmatched</Stamp>}</div>
                 </button>
                 {isOpen&&(
