@@ -823,6 +823,8 @@ function BulkImportView({skus,combos,setSkus,setCombos,showToast,logActivity}){
   const [stage,setStage]=useState("idle");const [fileName,setFileName]=useState("");
   const [preview,setPreview]=useState({skus:[],combos:[]});const ref=useRef(null);
   const [importMode,setImportMode]=useState("merge"); // "merge" | "replace"
+  const [replaceConfirmText,setReplaceConfirmText]=useState("");
+  const [showReplaceConfirm,setShowReplaceConfirm]=useState(false);
 
   // Detect component SKUs referenced by imported combos that don't exist anywhere
   // (not in current catalog, not in the SKUs sheet being imported) — catches
@@ -853,10 +855,19 @@ function BulkImportView({skus,combos,setSkus,setCombos,showToast,logActivity}){
   }
   function confirmImport(){
     if(importMode==="replace"){
+      // Hard block: never allow Replace All to wipe the catalog with an empty parse result —
+      // 0 SKUs and 0 combos almost always means the file was missing a sheet (parsing failure),
+      // not a genuine intent to empty the catalog.
+      if(preview.skus.length===0&&preview.combos.length===0){
+        showToast("error","This file parsed as 0 SKUs and 0 combos — refusing to Replace All, since that would wipe your entire catalog. Check the file has both 'SKUs' and 'Combos' sheets, or use Merge instead.");
+        return;
+      }
+      if(!showReplaceConfirm){setShowReplaceConfirm(true);return;} // require an extra click + typed confirmation first
+      if(replaceConfirmText.trim().toUpperCase()!=="REPLACE"){showToast("error",'Type "REPLACE" exactly to confirm.');return;}
       // Replace mode: wipe existing data, use only what's in the file
       setSkus(preview.skus);
       setCombos(preview.combos.map(c=>({...c,id:c.id||Date.now().toString()+Math.random()})));
-      setStage("imported");
+      setStage("imported");setShowReplaceConfirm(false);setReplaceConfirmText("");
       showToast("success",`Replaced catalog: ${preview.skus.length} SKUs & ${preview.combos.length} combos. 🔄`);
       logActivity?.("Bulk Import — Replace All",`${fileName}: ${preview.skus.length} SKUs & ${preview.combos.length} combos`);
       return;
@@ -868,7 +879,7 @@ function BulkImportView({skus,combos,setSkus,setCombos,showToast,logActivity}){
     setSkus(ms);setCombos(mc);setStage("imported");showToast("success",`Imported ${preview.skus.length} SKUs & ${preview.combos.length} combos. ✨`);
     logActivity?.("Bulk Import — Merge",`${fileName}: ${preview.skus.length} SKUs & ${preview.combos.length} combos`);
   }
-  function reset(){setStage("idle");setPreview({skus:[],combos:[]});setFileName("");if(ref.current)ref.current.value="";}
+  function reset(){setStage("idle");setPreview({skus:[],combos:[]});setFileName("");setShowReplaceConfirm(false);setReplaceConfirmText("");if(ref.current)ref.current.value="";}
   return(
     <div>
       <SectionHeader title="Bulk Import" subtitle="Upload SKU & combo catalog from Excel or CSV."/>
@@ -912,7 +923,7 @@ function BulkImportView({skus,combos,setSkus,setCombos,showToast,logActivity}){
           <div className="mb-4 p-3 rounded-xl" style={{backgroundColor:C.bgLight}}>
             <label className="text-xs font-bold uppercase block mb-2" style={{color:C.lightText,fontFamily:F.body,letterSpacing:"0.02em"}}>Import Mode</label>
             <div className="grid grid-cols-2 gap-2">
-              <button onClick={()=>setImportMode("merge")} className="p-3 rounded-xl border-2 text-left transition-all" style={{borderColor:importMode==="merge"?C.zenkyPurple:C.border,backgroundColor:importMode==="merge"?"#F3EEFF":C.softWhite}}>
+              <button onClick={()=>{setImportMode("merge");setShowReplaceConfirm(false);setReplaceConfirmText("");}} className="p-3 rounded-xl border-2 text-left transition-all" style={{borderColor:importMode==="merge"?C.zenkyPurple:C.border,backgroundColor:importMode==="merge"?"#F3EEFF":C.softWhite}}>
                 <div className="font-bold text-sm flex items-center gap-1.5" style={{color:importMode==="merge"?C.zenkyPurple:C.darkText,fontFamily:F.display}}>{importMode==="merge"&&<Check size={14}/>}Merge</div>
                 <div className="text-xs mt-0.5" style={{color:C.lightText}}>Update matches, keep everything else</div>
               </button>
@@ -930,6 +941,23 @@ function BulkImportView({skus,combos,setSkus,setCombos,showToast,logActivity}){
             </div>
           )}
 
+          {showReplaceConfirm&&(
+            <Card className="mb-4" style={{borderColor:"#fecaca",backgroundColor:"#fff5f5"}}>
+              <div className="flex items-start gap-3">
+                <AlertTriangle size={20} style={{color:"#dc2626",flexShrink:0,marginTop:2}}/>
+                <div className="flex-1">
+                  <p className="font-bold text-sm mb-1" style={{color:"#991b1b",fontFamily:F.display}}>Final check: replace {skus.length} SKUs & {combos.length} combos with {preview.skus.length} SKUs & {preview.combos.length} combos?</p>
+                  <p className="text-xs mb-3" style={{color:"#991b1b"}}>This cannot be undone, and since sync is on, it updates on every device immediately.</p>
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <Input placeholder='Type "REPLACE" to confirm' value={replaceConfirmText} onChange={e=>setReplaceConfirmText(e.target.value)} className="max-w-xs" style={{borderColor:"#fecaca"}}/>
+                    <button onClick={confirmImport} className="px-4 py-2.5 rounded-xl text-sm font-bold text-white" style={{backgroundColor:"#dc2626",fontFamily:F.display}}>Replace Now</button>
+                    <button onClick={()=>{setShowReplaceConfirm(false);setReplaceConfirmText("");}} className="text-sm font-bold" style={{color:C.lightText,fontFamily:F.body}}>Cancel</button>
+                  </div>
+                </div>
+              </div>
+            </Card>
+          )}
+
           <div className="flex gap-2"><PrimaryButton onClick={confirmImport} tone={importMode==="replace"?"pink":undefined}><Check size={15}/>{importMode==="replace"?"Replace & Import":"Confirm Import"}</PrimaryButton><button onClick={reset} className="text-sm font-bold" style={{color:C.lightText}}>Cancel</button></div></div>)}
         {stage==="imported"&&(<div className="text-center py-8"><Check size={32} className="mx-auto mb-3" style={{color:C.mintGreen}}/><p className="font-bold text-lg" style={{color:C.darkText,fontFamily:F.display}}>Import complete!</p><p className="text-sm mt-1" style={{color:C.lightText}}>{preview.skus.length} SKUs & {preview.combos.length} combos added.</p><div className="mt-5"><PrimaryButton onClick={reset}><Upload size={15}/>Import another</PrimaryButton></div></div>)}
       </Card>
@@ -941,11 +969,33 @@ function BulkImportView({skus,combos,setSkus,setCombos,showToast,logActivity}){
 function UploadView({skus,combos,setSkus,reports,setReports,salesLines,setSalesLines,logActivity,showToast}){
   const [channel,setChannel]=useState("amazon"); // "amazon" | "website"
   const [stage,setStage]=useState("idle");const [fileName,setFileName]=useState("");
-  const [aggregated,setAggregated]=useState([]);const [rawRows,setRawRows]=useState([]);const [extraCols,setExtraCols]=useState({});
+  const [rawRows,setRawRows]=useState([]);const [extraCols,setExtraCols]=useState({});
   const [repairNote,setRepairNote]=useState(null);
+  const [skipDuplicates,setSkipDuplicates]=useState(true);
   const [weekLabel,setWeekLabel]=useState("");const ref=useRef(null);
   const skuMap=useMemo(()=>Object.fromEntries(skus.map(s=>[s.sku,s])),[skus]);
   const comboMap=useMemo(()=>Object.fromEntries(combos.map(c=>[c.sku,c])),[combos]);
+
+  // Every order-id already recorded from a previously applied report
+  const existingOrderIds=useMemo(()=>new Set(salesLines.map(l=>l.orderId).filter(Boolean)),[salesLines]);
+
+  // Which order-ids in THIS file have already been counted before
+  const duplicateOrderIds=useMemo(()=>{
+    if(!rawRows.length)return new Set();
+    return new Set(rawRows.filter(r=>r.orderId&&existingOrderIds.has(r.orderId)).map(r=>r.orderId));
+  },[rawRows,existingOrderIds]);
+
+  // Rows actually used for stock deduction / sales report, after optionally skipping duplicates
+  const effectiveRows=useMemo(()=>{
+    if(!skipDuplicates||duplicateOrderIds.size===0)return rawRows;
+    return rawRows.filter(r=>!(r.orderId&&duplicateOrderIds.has(r.orderId)));
+  },[rawRows,skipDuplicates,duplicateOrderIds]);
+
+  const aggregated=useMemo(()=>{
+    const totals={};
+    effectiveRows.forEach(r=>{if(!r.sku||isNaN(r.qty))return;totals[r.sku]=(totals[r.sku]||0)+r.qty;});
+    return Object.entries(totals).map(([code,qty])=>{const combo=combos.find(c=>c.sku===code),sku=skuMap[code];const mt=combo?"combo":sku?"direct":"unknown";return{code,qty,matchType:mt,matchName:combo?.name||sku?.name||"Not in catalog"};});
+  },[effectiveRows,combos,skuMap]);
 
   function processRows(rows){
     if(!rows?.length){showToast("error","File is empty.");return;}
@@ -954,8 +1004,7 @@ function UploadView({skus,combos,setSkus,reports,setReports,salesLines,setSalesL
     const extra=detectExtraColumns(hk);
     setExtraCols(extra);
     setRawRows(rows.map(r=>({sku:String(r[sk]||"").trim(),qty:parseFloat(r[qk]),date:extra.dateKey?r[extra.dateKey]:null,orderId:extra.orderIdKey?String(r[extra.orderIdKey]||"").trim():"",buyer:extra.buyerKey?String(r[extra.buyerKey]||"").trim():"",city:extra.cityKey?String(r[extra.cityKey]||"").trim():"",state:extra.stateKey?String(r[extra.stateKey]||"").trim():"",price:extra.priceKey?parseFloat(r[extra.priceKey]):null})).filter(r=>r.sku&&!isNaN(r.qty)));
-    const totals={};rows.forEach(r=>{const code=String(r[sk]||"").trim(),qty=parseFloat(r[qk]);if(!code||isNaN(qty))return;totals[code]=(totals[code]||0)+qty;});
-    setAggregated(Object.entries(totals).map(([code,qty])=>{const combo=combos.find(c=>c.sku===code),sku=skuMap[code];const mt=combo?"combo":sku?"direct":"unknown";return{code,qty,matchType:mt,matchName:combo?.name||sku?.name||"Not in catalog"};}));setStage("parsed");
+    setStage("parsed");
   }
 
   /* Turns raw array-of-arrays (with header row first) into array-of-objects,
@@ -993,6 +1042,7 @@ function UploadView({skus,combos,setSkus,reports,setReports,salesLines,setSalesL
 
   function applyReport(){
     if(!weekLabel.trim()){showToast("error","Add a report label.");return;}
+    const skippedCount=duplicateOrderIds.size;
     const skuBefore={};skus.forEach(s=>skuBefore[s.sku]=s.stock);
     const updated=Object.fromEntries(skus.map(s=>[s.sku,{...s}]));
     aggregated.forEach(({code,qty,matchType})=>{if(matchType==="combo"){const c=combos.find(x=>x.sku===code);c?.components?.forEach(comp=>{if(updated[comp.sku])updated[comp.sku].stock=Math.max(0,updated[comp.sku].stock-comp.qty*qty);});}else if(matchType==="direct"&&updated[code])updated[code].stock=Math.max(0,updated[code].stock-qty);});
@@ -1001,9 +1051,10 @@ function UploadView({skus,combos,setSkus,reports,setReports,salesLines,setSalesL
     const report={id:reportId,label:weekLabel.trim(),fileName,channel,appliedAt:new Date().toISOString(),
       skuLines:newSkus.map(s=>({sku:s.sku,name:s.name,opening:skuBefore[s.sku]??s.stock,sold:(skuBefore[s.sku]??s.stock)-s.stock,closing:s.stock,reorderLevel:s.reorderLevel,status:stockStatus(s)})),
       comboLines:combos.map(c=>({sku:c.sku,name:c.name,readyBefore:comboReadiness(c,bMap).ready,readyAfter:comboReadiness(c,aMap).ready,bottleneck:comboReadiness(c,aMap).bottleneck})),
-      unmatched:aggregated.filter(a=>a.matchType==="unknown")};
+      unmatched:aggregated.filter(a=>a.matchType==="unknown"),
+      skippedDuplicates:skippedCount};
 
-    const newLines=rawRows.map((row,i)=>{
+    const newLines=effectiveRows.map((row,i)=>{
       const combo=comboMap[row.sku],sku=skuMap[row.sku];
       const matchType=combo?"combo":sku?"direct":"unknown";
       const name=combo?.name||sku?.name||row.sku;
@@ -1014,10 +1065,10 @@ function UploadView({skus,combos,setSkus,reports,setReports,salesLines,setSalesL
     });
 
     setSkus(newSkus);setReports([report,...reports]);setSalesLines([...salesLines,...newLines]);
-    logActivity?.("Sales report applied",`[${channel}] "${weekLabel.trim()}" — ${fileName} (${aggregated.length} codes, ${newLines.length} order lines)`);
-    setStage("applied");showToast("success","Inventory updated. 📊");
+    logActivity?.("Sales report applied",`[${channel}] "${weekLabel.trim()}" — ${fileName} (${aggregated.length} codes, ${newLines.length} order lines${skippedCount?`, ${skippedCount} duplicate orders skipped`:""})`);
+    setStage("applied");showToast("success",skippedCount?`Inventory updated — ${skippedCount} duplicate order(s) skipped. 📊`:"Inventory updated. 📊");
   }
-  function reset(){setStage("idle");setAggregated([]);setRawRows([]);setFileName("");setWeekLabel("");setRepairNote(null);if(ref.current)ref.current.value="";}
+  function reset(){setStage("idle");setRawRows([]);setFileName("");setWeekLabel("");setRepairNote(null);setSkipDuplicates(true);if(ref.current)ref.current.value="";}
 
   function downloadWebsiteTemplate(){
     const csv="sku,quantity,item-price,purchase-date,buyer-name,buyer-email,ship-city,ship-state\n"+
@@ -1071,6 +1122,31 @@ function UploadView({skus,combos,setSkus,reports,setReports,salesLines,setSalesL
           {repairNote&&<div className="mb-3 p-2.5 rounded-xl text-xs flex items-center gap-2" style={{backgroundColor:repairNote.type==="success"?"#F0FDE8":"#FFF3E6",color:repairNote.type==="success"?"#166534":"#9a5b0f"}}><Check size={14}/>{repairNote.msg}</div>}
           {hasExtras&&<div className="mb-3 p-2.5 rounded-xl text-xs flex items-center gap-2" style={{backgroundColor:"#F0FDE8",color:"#166534"}}><Check size={14}/>Detected {[extraCols.priceKey&&"price",extraCols.buyerKey&&"buyer",extraCols.cityKey&&"location",extraCols.dateKey&&"date",extraCols.orderIdKey&&"order ID"].filter(Boolean).join(", ")} — will populate ZenkyBox Sales Report.</div>}
           {!hasExtras&&<div className="mb-3 p-2.5 rounded-xl text-xs flex items-center gap-2" style={{backgroundColor:C.bgLight,color:C.lightText}}><AlertTriangle size={14}/>No price/buyer/location columns detected — stock will update, but Sales Report earning/buyer/location breakdowns won't have data for this upload.</div>}
+          {duplicateOrderIds.size>0&&(
+            <div className="mb-3 p-3 rounded-xl text-xs" style={{backgroundColor:"#fff5f5",border:"2px solid #fecaca"}}>
+              <div className="flex items-start gap-2">
+                <AlertTriangle size={16} style={{color:"#dc2626",flexShrink:0,marginTop:1}}/>
+                <div className="flex-1">
+                  <p className="font-bold mb-1" style={{color:"#991b1b"}}>
+                    {duplicateOrderIds.size} order{duplicateOrderIds.size!==1?"s":""} already recorded from a previous upload
+                  </p>
+                  <p style={{color:"#991b1b"}}>
+                    These order IDs exist in an earlier applied report — likely the same sales exported through a different report format. Counting them again would double-deduct stock and inflate Sales Report totals.
+                  </p>
+                  <div className="mt-2 max-h-20 overflow-y-auto text-xs" style={{fontFamily:F.mono,color:"#991b1b"}}>
+                    {Array.from(duplicateOrderIds).slice(0,8).join(", ")}{duplicateOrderIds.size>8?` …and ${duplicateOrderIds.size-8} more`:""}
+                  </div>
+                  <label className="flex items-center gap-2 mt-2.5 cursor-pointer">
+                    <input type="checkbox" checked={skipDuplicates} onChange={e=>setSkipDuplicates(e.target.checked)}/>
+                    <span className="font-bold" style={{color:"#991b1b"}}>Skip these duplicate orders when applying (recommended)</span>
+                  </label>
+                </div>
+              </div>
+            </div>
+          )}
+          <div className="text-xs mb-2" style={{color:C.lightText}}>
+            {skipDuplicates&&duplicateOrderIds.size>0?`Showing ${aggregated.length} codes from ${effectiveRows.length} order lines (${duplicateOrderIds.size} duplicate orders excluded)`:`${aggregated.length} codes from ${effectiveRows.length} order lines`}
+          </div>
           <div className="overflow-x-auto mb-4"><table className="w-full text-sm"><thead><tr style={{color:C.lightText}}><th className="py-2 pr-3 text-left font-bold text-xs uppercase">Code</th><th className="py-2 pr-3 text-left font-bold text-xs uppercase">Qty</th><th className="py-2 pr-3 text-left font-bold text-xs uppercase">Type</th><th className="py-2 pr-3 text-left font-bold text-xs uppercase">Name</th></tr></thead><tbody>{aggregated.map(a=><tr key={a.code} className="border-t" style={{borderColor:C.border}}><td className="py-2 pr-3" style={{fontFamily:F.mono,fontWeight:600}}>{a.code}</td><td className="py-2 pr-3" style={{fontFamily:F.mono}}>{fmt(a.qty)}</td><td className="py-2 pr-3">{a.matchType==="combo"?<Stamp tone="mint">Combo</Stamp>:a.matchType==="direct"?<Stamp tone="purple">SKU</Stamp>:<Stamp tone="pink">Unknown</Stamp>}</td><td className="py-2 pr-3" style={{color:a.matchType==="unknown"?C.zenkyPink:C.darkText}}>{a.matchName}</td></tr>)}</tbody></table></div>
           <div className="flex items-end gap-3 flex-wrap"><div className="w-full sm:w-64"><label className="text-xs font-bold block mb-1" style={{color:C.lightText}}>Report label</label><Input placeholder="e.g. Week of Jun 16–22" value={weekLabel} onChange={e=>setWeekLabel(e.target.value)}/></div><PrimaryButton onClick={applyReport}><Check size={15}/>Apply to inventory</PrimaryButton></div></div>)}
         {stage==="applied"&&(<div className="text-center py-8"><Check size={32} className="mx-auto mb-3" style={{color:C.mintGreen}}/><p className="font-bold text-lg" style={{color:C.darkText,fontFamily:F.display}}>Report applied</p><p className="text-sm mt-1" style={{color:C.lightText}}>View breakdown in Reports tab, or full analytics in ZenkyBox Sales Report.</p><div className="mt-5"><PrimaryButton onClick={reset}><Upload size={15}/>Upload another</PrimaryButton></div></div>)}
@@ -1134,6 +1210,7 @@ function ReportsView({reports,skus,combos}){
                     <div className="flex items-center justify-between mb-3"><h4 className="font-bold text-sm" style={{color:C.darkText,fontFamily:F.display}}>SKU Breakdown</h4><button onClick={()=>exportReport(r)} className="inline-flex items-center gap-1 text-xs font-bold" style={{color:C.zenkyOrange}}><Download size={13}/>Export CSV</button></div>
                     <div className="overflow-x-auto mb-4"><table className="w-full text-sm"><thead><tr style={{color:C.lightText}}><th className="py-1.5 pr-3 text-left font-bold text-xs uppercase">SKU</th><th className="py-1.5 pr-3 text-left font-bold text-xs uppercase">Name</th><th className="py-1.5 pr-3 text-left font-bold text-xs uppercase">Opening</th><th className="py-1.5 pr-3 text-left font-bold text-xs uppercase">Sold</th><th className="py-1.5 pr-3 text-left font-bold text-xs uppercase">Closing</th><th className="py-1.5 pr-3 text-left font-bold text-xs uppercase">Status</th></tr></thead><tbody>{r.skuLines?.map(l=><tr key={l.sku} className="border-t" style={{borderColor:C.border}}><td className="py-1.5 pr-3" style={{fontFamily:F.mono,fontWeight:600}}>{l.sku}</td><td className="py-1.5 pr-3">{l.name}</td><td className="py-1.5 pr-3" style={{fontFamily:F.mono}}>{fmt(l.opening)}</td><td className="py-1.5 pr-3" style={{fontFamily:F.mono}}>{fmt(l.sold)}</td><td className="py-1.5 pr-3" style={{fontFamily:F.mono}}>{fmt(l.closing)}</td><td className="py-1.5 pr-3">{statusStamp(l.status)}</td></tr>)}</tbody></table></div>
                     {r.unmatched?.length>0&&<div className="mt-3 text-xs flex items-start gap-2" style={{color:C.zenkyPink}}><AlertTriangle size={14} className="mt-0.5"/><span>{r.unmatched.length} unmatched: {r.unmatched.map(u=>u.code).join(", ")}</span></div>}
+                    {r.skippedDuplicates>0&&<div className="mt-2 text-xs flex items-center gap-2" style={{color:"#166534"}}><Check size={13}/><span>{r.skippedDuplicates} duplicate order{r.skippedDuplicates!==1?"s":""} skipped — already recorded in an earlier report.</span></div>}
                   </div>
                 )}
               </Card>
