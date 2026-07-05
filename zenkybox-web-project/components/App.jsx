@@ -1613,28 +1613,49 @@ export default function App(){
   const [activityLog,setActivityLog]=useState([]);
   const [adminPin,setAdminPinState]=useState("");
   const [loaded,setLoaded]=useState(false);
+  const [canSave,setCanSave]=useState(false); // only true once a load has genuinely succeeded — prevents overwriting real data with an empty state after a failed fetch
+  const [loadError,setLoadError]=useState(false);
   const [view,setView]=useState("dashboard");
   const [sidebarOpen,setSidebarOpen]=useState(false);
   const [toast,setToast]=useState(null);
   const [synced,setSynced]=useState(false);
   const [role,setRole]=useState("staff"); // per-device only, not shared across users
 
-  // Load initial data
+  function applyLoadedData(data){
+    setSkus(data?.skus||[]);setCombos(data?.combos||[]);setReports(data?.reports||[]);
+    setSalesLines(data?.salesLines||[]);setActivityLog(data?.activityLog||[]);
+    setAdminPinState(data?.adminPin||"");
+  }
+
+  // Load initial data — retries a couple of times on failure before giving up,
+  // since the most common failure window is a fresh deploy's cold start.
   useEffect(()=>{
+    let cancelled=false;
     (async()=>{
-      try{
-        const data=await loadData();
-        if(data){
-          setSkus(data.skus||[]);setCombos(data.combos||[]);setReports(data.reports||[]);
-          setSalesLines(data.salesLines||[]);setActivityLog(data.activityLog||[]);
-          setAdminPinState(data.adminPin||"");
+      let attempt=0;
+      while(attempt<3&&!cancelled){
+        const result=await loadData();
+        if(result.ok){
+          applyLoadedData(result.data);
+          setSynced(hasSync());
+          setCanSave(true); // safe to save now — we know the true remote/local state
+          setLoadError(false);
+          break;
         }
+        attempt++;
+        if(attempt<3)await new Promise(res=>setTimeout(res,800*attempt)); // brief backoff before retry
+      }
+      if(!cancelled&&!canSave){
+        // All retries failed — do NOT enable saving. Show a visible warning instead
+        // of silently risking an overwrite of real remote data.
+        setLoadError(true);
         setSynced(hasSync());
-        // Restore this device's unlocked session (not shared — each device unlocks independently)
-        if(typeof window!=="undefined"&&sessionStorage.getItem("zenkybox-role")==="admin")setRole("admin");
-      }catch(e){console.error(e);}
-      setLoaded(true);
+      }
+      if(typeof window!=="undefined"&&sessionStorage.getItem("zenkybox-role")==="admin")setRole("admin");
+      if(!cancelled)setLoaded(true);
     })();
+    return()=>{cancelled=true;};
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   },[]);
 
   // Subscribe to real-time updates (Supabase)
@@ -1642,24 +1663,31 @@ export default function App(){
     let unsub=null;
     (async()=>{
       unsub=await subscribeToData(data=>{
-        if(data){
-          setSkus(data.skus||[]);setCombos(data.combos||[]);setReports(data.reports||[]);
-          setSalesLines(data.salesLines||[]);setActivityLog(data.activityLog||[]);
-          setAdminPinState(data.adminPin||"");
-        }
+        if(data)applyLoadedData(data);
       });
     })();
     return()=>{if(unsub)unsub();};
   },[]);
 
-  // Save whenever data changes
+  // Save whenever data changes — gated on canSave, so a failed initial load
+  // can never result in writing an empty catalog over real remote data.
   const saveTimeout=useRef(null);
   useEffect(()=>{
-    if(!loaded)return;
+    if(!loaded||!canSave)return;
     clearTimeout(saveTimeout.current);
     saveTimeout.current=setTimeout(()=>{saveData({skus,combos,reports,salesLines,activityLog,adminPin}).catch(()=>{});},500);
     return()=>clearTimeout(saveTimeout.current);
-  },[skus,combos,reports,salesLines,activityLog,adminPin,loaded]);
+  },[skus,combos,reports,salesLines,activityLog,adminPin,loaded,canSave]);
+
+  function retryLoad(){
+    setLoadError(false);setLoaded(false);
+    (async()=>{
+      const result=await loadData();
+      if(result.ok){applyLoadedData(result.data);setCanSave(true);setLoadError(false);}
+      else setLoadError(true);
+      setLoaded(true);
+    })();
+  }
 
   function showToast(type,msg){setToast({type,msg});setTimeout(()=>setToast(null),3500);}
 
@@ -1697,6 +1725,22 @@ export default function App(){
   if(!loaded)return(
     <div className="flex items-center justify-center h-screen" style={{backgroundColor:C.softWhite}}>
       <div className="text-center"><div style={{fontFamily:F.display,color:C.zenkyPurple,fontSize:"24px",fontWeight:"black"}}>✨ ZenkyBox</div><div className="text-sm mt-2" style={{color:C.lightText}}>Loading inventory…</div></div>
+    </div>
+  );
+
+  if(loadError)return(
+    <div className="flex items-center justify-center h-screen p-6" style={{backgroundColor:C.softWhite}}>
+      <div className="max-w-md text-center">
+        <AlertTriangle size={40} style={{color:"#dc2626",margin:"0 auto"}}/>
+        <div className="mt-3 font-black text-xl" style={{fontFamily:F.display,color:C.darkText}}>Couldn't load your synced data</div>
+        <p className="text-sm mt-2" style={{color:C.lightText,fontFamily:F.body}}>
+          The connection to your database failed just now. To protect your data, ZenkyBox refuses to show or save anything until this is confirmed working — this prevents an empty state from accidentally overwriting your real catalog.
+        </p>
+        <p className="text-xs mt-3" style={{color:C.lightText}}>This is usually temporary (a brief network hiccup). Try again in a moment.</p>
+        <button onClick={retryLoad} className="mt-4 inline-flex items-center gap-2 px-5 py-2.5 rounded-full text-sm font-bold" style={{backgroundColor:C.zenkyPurple,color:C.softWhite,fontFamily:F.display}}>
+          <RefreshCw size={15}/>Try Again
+        </button>
+      </div>
     </div>
   );
 

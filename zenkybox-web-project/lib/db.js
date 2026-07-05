@@ -3,6 +3,11 @@
  * - Supabase (free tier) for cross-device real-time sync
  * - Falls back to localStorage automatically if not configured
  * - No credit card ever required; free tier cannot auto-bill
+ *
+ * CRITICAL: loadData() distinguishes "no data exists yet" from "fetch failed" —
+ * these must never be treated the same, or a transient network/Supabase hiccup
+ * (most likely right after a fresh deploy) causes the app to silently overwrite
+ * real remote data with an empty local state.
  */
 
 const LOCAL_KEY = "zenkybox-web-v3";
@@ -19,31 +24,58 @@ async function getSupabase() {
     supabase = createClient(url, key);
     return supabase;
   } catch (e) {
-    console.warn("Supabase not available, using localStorage", e);
+    console.warn("Supabase client could not initialize", e);
     return null;
   }
 }
 
-/* ─── READ ─── */
+/* ─── READ ───
+   Returns { ok, data, source }.
+   ok=true  → safe to trust `data` (may legitimately be null if this is a
+              brand-new install with nothing saved yet).
+   ok=false → the fetch itself FAILED (network/Supabase error). Caller must
+              NOT proceed to auto-save in this case — data may exist remotely
+              and simply couldn't be retrieved right now. */
 export async function loadData() {
-  try {
-    const sb = await getSupabase();
-    if (sb) {
+  const hasSupabaseConfigured = !!(
+    process.env.NEXT_PUBLIC_SUPABASE_URL && process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
+  );
+
+  if (hasSupabaseConfigured) {
+    try {
+      const sb = await getSupabase();
+      if (!sb) {
+        // Configured but client failed to initialize — treat as a failed fetch,
+        // NOT as "no data". Do not let the caller assume empty state.
+        return { ok: false, data: null, source: "supabase-init-failed" };
+      }
       const { data, error } = await sb
         .from("zenkybox_data")
         .select("data")
         .eq("id", 1)
         .single();
-      if (!error && data?.data) return data.data;
-    }
-  } catch (e) {}
 
+      // PGRST116 = "no rows found" — this IS a legitimate empty state
+      // (first-ever run, table exists but nothing saved yet).
+      if (error && error.code !== "PGRST116") {
+        return { ok: false, data: null, source: "supabase-error", error };
+      }
+      return { ok: true, data: data?.data ?? null, source: "supabase" };
+    } catch (e) {
+      // Any thrown exception (network failure, timeout, etc.) — genuinely
+      // unknown state. Refuse to let the caller treat this as "empty".
+      return { ok: false, data: null, source: "supabase-exception", error: e };
+    }
+  }
+
+  // No Supabase configured at all — local-only mode. Empty localStorage here
+  // truly does mean "nothing saved yet on this device", which is safe.
   try {
     const raw = localStorage.getItem(LOCAL_KEY);
-    if (raw) return JSON.parse(raw);
-  } catch (e) {}
-
-  return null;
+    return { ok: true, data: raw ? JSON.parse(raw) : null, source: "local" };
+  } catch (e) {
+    return { ok: true, data: null, source: "local-error" };
+  }
 }
 
 /* ─── WRITE ─── */
@@ -59,7 +91,9 @@ export async function saveData(payload) {
         .from("zenkybox_data")
         .upsert({ id: 1, data: payload, updated_at: new Date().toISOString() });
     }
-  } catch (e) {}
+  } catch (e) {
+    console.error("saveData: Supabase write failed", e);
+  }
 }
 
 /* ─── REAL-TIME SUBSCRIPTION ─── */
