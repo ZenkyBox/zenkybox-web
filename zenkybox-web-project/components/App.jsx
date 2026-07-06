@@ -1621,6 +1621,14 @@ export default function App(){
   const [synced,setSynced]=useState(false);
   const [role,setRole]=useState("staff"); // per-device only, not shared across users
 
+  // Tracks the newest updated_at timestamp we're aware of — from our own last
+  // save OR the last realtime update we accepted. Any incoming realtime event
+  // that isn't strictly newer than this gets ignored, since it's either an
+  // echo of our own write or a stale/out-of-order delivery. This is what
+  // prevents "add a SKU, count flickers back down" — a real race that existed
+  // because Supabase broadcasts writes back to the client that made them.
+  const lastKnownUpdatedAt=useRef(null);
+
   function applyLoadedData(data){
     setSkus(data?.skus||[]);setCombos(data?.combos||[]);setReports(data?.reports||[]);
     setSalesLines(data?.salesLines||[]);setActivityLog(data?.activityLog||[]);
@@ -1633,19 +1641,22 @@ export default function App(){
     let cancelled=false;
     (async()=>{
       let attempt=0;
+      let succeeded=false;
       while(attempt<3&&!cancelled){
         const result=await loadData();
         if(result.ok){
           applyLoadedData(result.data);
+          if(result.updatedAt)lastKnownUpdatedAt.current=result.updatedAt;
           setSynced(hasSync());
           setCanSave(true); // safe to save now — we know the true remote/local state
           setLoadError(false);
+          succeeded=true;
           break;
         }
         attempt++;
         if(attempt<3)await new Promise(res=>setTimeout(res,800*attempt)); // brief backoff before retry
       }
-      if(!cancelled&&!canSave){
+      if(!cancelled&&!succeeded){
         // All retries failed — do NOT enable saving. Show a visible warning instead
         // of silently risking an overwrite of real remote data.
         setLoadError(true);
@@ -1658,12 +1669,17 @@ export default function App(){
     // eslint-disable-next-line react-hooks/exhaustive-deps
   },[]);
 
-  // Subscribe to real-time updates (Supabase)
+  // Subscribe to real-time updates (Supabase) — only apply genuinely newer changes
   useEffect(()=>{
     let unsub=null;
     (async()=>{
-      unsub=await subscribeToData(data=>{
-        if(data)applyLoadedData(data);
+      unsub=await subscribeToData((data,updatedAt)=>{
+        if(!data)return;
+        if(updatedAt&&lastKnownUpdatedAt.current&&new Date(updatedAt)<=new Date(lastKnownUpdatedAt.current)){
+          return; // stale or self-echo — we already have this or something newer
+        }
+        if(updatedAt)lastKnownUpdatedAt.current=updatedAt;
+        applyLoadedData(data);
       });
     })();
     return()=>{if(unsub)unsub();};
@@ -1675,7 +1691,11 @@ export default function App(){
   useEffect(()=>{
     if(!loaded||!canSave)return;
     clearTimeout(saveTimeout.current);
-    saveTimeout.current=setTimeout(()=>{saveData({skus,combos,reports,salesLines,activityLog,adminPin}).catch(()=>{});},500);
+    saveTimeout.current=setTimeout(()=>{
+      saveData({skus,combos,reports,salesLines,activityLog,adminPin})
+        .then(timestamp=>{if(timestamp)lastKnownUpdatedAt.current=timestamp;})
+        .catch(()=>{});
+    },500);
     return()=>clearTimeout(saveTimeout.current);
   },[skus,combos,reports,salesLines,activityLog,adminPin,loaded,canSave]);
 
@@ -1683,8 +1703,11 @@ export default function App(){
     setLoadError(false);setLoaded(false);
     (async()=>{
       const result=await loadData();
-      if(result.ok){applyLoadedData(result.data);setCanSave(true);setLoadError(false);}
-      else setLoadError(true);
+      if(result.ok){
+        applyLoadedData(result.data);
+        if(result.updatedAt)lastKnownUpdatedAt.current=result.updatedAt;
+        setCanSave(true);setLoadError(false);
+      }else setLoadError(true);
       setLoaded(true);
     })();
   }

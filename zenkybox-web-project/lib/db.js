@@ -51,7 +51,7 @@ export async function loadData() {
       }
       const { data, error } = await sb
         .from("zenkybox_data")
-        .select("data")
+        .select("data, updated_at")
         .eq("id", 1)
         .single();
 
@@ -60,7 +60,7 @@ export async function loadData() {
       if (error && error.code !== "PGRST116") {
         return { ok: false, data: null, source: "supabase-error", error };
       }
-      return { ok: true, data: data?.data ?? null, source: "supabase" };
+      return { ok: true, data: data?.data ?? null, updatedAt: data?.updated_at ?? null, source: "supabase" };
     } catch (e) {
       // Any thrown exception (network failure, timeout, etc.) — genuinely
       // unknown state. Refuse to let the caller treat this as "empty".
@@ -78,8 +78,13 @@ export async function loadData() {
   }
 }
 
-/* ─── WRITE ─── */
+/* ─── WRITE ───
+   Returns the updated_at timestamp actually used for this write, so the caller
+   can remember "the newest version I myself am responsible for" and use it to
+   ignore stale/self-echoed realtime events (see subscribeToData below). */
 export async function saveData(payload) {
+  const timestamp = new Date().toISOString();
+
   try {
     localStorage.setItem(LOCAL_KEY, JSON.stringify(payload));
   } catch (e) {}
@@ -89,14 +94,21 @@ export async function saveData(payload) {
     if (sb) {
       await sb
         .from("zenkybox_data")
-        .upsert({ id: 1, data: payload, updated_at: new Date().toISOString() });
+        .upsert({ id: 1, data: payload, updated_at: timestamp });
     }
   } catch (e) {
     console.error("saveData: Supabase write failed", e);
   }
+
+  return timestamp;
 }
 
-/* ─── REAL-TIME SUBSCRIPTION ─── */
+/* ─── REAL-TIME SUBSCRIPTION ───
+   Passes (data, updatedAt) to the callback. The caller is responsible for
+   comparing updatedAt against the timestamp of its own most recent saveData()
+   call and ignoring anything that isn't genuinely newer — otherwise a self-echo
+   or an out-of-order delivery of an older write can overwrite fresher local
+   state (the exact bug that caused "add SKU, count flickers back down"). */
 export async function subscribeToData(callback) {
   try {
     const sb = await getSupabase();
@@ -107,7 +119,7 @@ export async function subscribeToData(callback) {
           "postgres_changes",
           { event: "*", schema: "public", table: "zenkybox_data", filter: "id=eq.1" },
           (payload) => {
-            if (payload.new?.data) callback(payload.new.data);
+            if (payload.new?.data) callback(payload.new.data, payload.new.updated_at);
           }
         )
         .subscribe();
