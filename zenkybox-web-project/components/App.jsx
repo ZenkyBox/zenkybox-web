@@ -1481,7 +1481,7 @@ function SalesReportsView({salesLines,skus,combos}){
 }
 
 /* ═══ SOURCE DATA (Admin only) ═══ */
-function SourceDataView({activityLog,synced,salesLines,setSalesLines,skus,setSkus,logActivity,showToast}){
+function SourceDataView({activityLog,synced,salesLines,setSalesLines,reports,setReports,skus,setSkus,logActivity,showToast}){
   const dbUrl=process.env.NEXT_PUBLIC_SUPABASE_URL||"";
   const [scanResult,setScanResult]=useState(null); // {dupeGroups, extraQtyBySku, linesToRemove}
   const [confirmText,setConfirmText]=useState("");
@@ -1537,6 +1537,23 @@ function SourceDataView({activityLog,synced,salesLines,setSalesLines,skus,setSku
     logActivity?.("Cleaned duplicate sales data",`Removed ${scanResult.totalDuplicateLines} duplicate order lines, restored stock for ${Object.keys(scanResult.extraQtyBySku).length} SKUs`);
     showToast("success",`Removed ${scanResult.totalDuplicateLines} duplicate entries and restored stock. ✨`);
     setScanResult(null);setShowConfirm(false);setConfirmText("");
+  }
+
+  const [showFlushConfirm,setShowFlushConfirm]=useState(false);
+  const [flushConfirmText,setFlushConfirmText]=useState("");
+
+  function flushAllSalesData(){
+    if(flushConfirmText.trim().toUpperCase()!=="FLUSH"){showToast("error",'Type "FLUSH" exactly to confirm.');return;}
+    const lineCount=salesLines.length,reportCount=reports.length;
+    setSalesLines([]);
+    setReports([]);
+    // Reset every SKU's stock back to its recorded baseline, undoing every sales
+    // deduction ever applied — the clean-slate option when duplicate/corrupted
+    // uploads have made the current numbers untrustworthy.
+    setSkus(skus.map(s=>({...s,stock:s.initialStock??s.stock})));
+    logActivity?.("Flushed all sales data",`Cleared ${lineCount} sale lines and ${reportCount} reports; reset stock to initial baseline for all SKUs`);
+    showToast("success","All sales data flushed and stock reset to baseline. 🗑️");
+    setShowFlushConfirm(false);setFlushConfirmText("");
   }
 
   return(
@@ -1604,6 +1621,36 @@ function SourceDataView({activityLog,synced,salesLines,setSalesLines,skus,setSku
                 <button onClick={()=>{setShowConfirm(false);setConfirmText("");}} className="text-sm font-bold" style={{color:C.lightText,fontFamily:F.body}}>Cancel</button>
               </div>
             )}
+          </div>
+        )}
+      </Card>
+
+      <Card className="mb-6" style={{borderColor:"#fecaca"}}>
+        <div className="flex items-center gap-2 mb-3">
+          <Trash2 size={18} style={{color:"#dc2626"}}/>
+          <h3 className="font-bold text-lg" style={{fontFamily:F.display,color:"#991b1b"}}>Flush All Sales Data (Clean Slate)</h3>
+        </div>
+        <p className="text-sm mb-1" style={{color:C.darkText,fontFamily:F.body}}>
+          For when duplicate/corrupted uploads have made current numbers untrustworthy and you'd rather start fresh than fix them piece by piece. This action:
+        </p>
+        <ul className="text-sm mb-4 list-disc pl-5 space-y-0.5" style={{color:C.darkText,fontFamily:F.body}}>
+          <li>Clears every sale line ({salesLines.length} currently) — Sales Report goes back to zero</li>
+          <li>Clears every applied report ({reports.length} currently) — Reports tab goes back to zero</li>
+          <li>Resets every SKU's stock back to its original recorded baseline — undoing every deduction ever applied</li>
+          <li><strong>Keeps</strong> your SKU Catalog and Gift Combos exactly as they are — nothing about product definitions is touched</li>
+        </ul>
+        {!showFlushConfirm?(
+          <button onClick={()=>setShowFlushConfirm(true)} className="inline-flex items-center gap-2 px-4 py-2.5 rounded-full text-sm font-bold text-white" style={{backgroundColor:"#dc2626",fontFamily:F.display}}>
+            <Trash2 size={15}/>Flush All Sales Data
+          </button>
+        ):(
+          <div className="p-3.5 rounded-xl" style={{backgroundColor:"#fff5f5",border:"2px solid #fecaca"}}>
+            <p className="font-bold text-sm mb-2" style={{color:"#991b1b",fontFamily:F.display}}>This cannot be undone. Type "FLUSH" to confirm.</p>
+            <div className="flex items-center gap-2 flex-wrap">
+              <Input placeholder='Type "FLUSH" to confirm' value={flushConfirmText} onChange={e=>setFlushConfirmText(e.target.value)} className="max-w-xs" style={{borderColor:"#fecaca"}}/>
+              <button onClick={flushAllSalesData} className="px-4 py-2.5 rounded-xl text-sm font-bold text-white" style={{backgroundColor:"#dc2626",fontFamily:F.display}}>Confirm Flush</button>
+              <button onClick={()=>{setShowFlushConfirm(false);setFlushConfirmText("");}} className="text-sm font-bold" style={{color:C.lightText,fontFamily:F.body}}>Cancel</button>
+            </div>
           </div>
         )}
       </Card>
@@ -1882,7 +1929,7 @@ export default function App(){
               {view==="reports"&&<ReportsView reports={reports} skus={skus} combos={combos}/>}
               {view==="sales-reports"&&<SalesReportsView salesLines={salesLines} skus={skus} combos={combos}/>}
               {view==="costing"&&<CostingPricingView skus={skus}/>}
-              {view==="source-data"&&<SourceDataView activityLog={activityLog} synced={synced} salesLines={salesLines} setSalesLines={setSalesLines} skus={skus} setSkus={setSkus} logActivity={logActivity} showToast={showToast}/>}
+              {view==="source-data"&&<SourceDataView activityLog={activityLog} synced={synced} salesLines={salesLines} setSalesLines={setSalesLines} reports={reports} setReports={setReports} skus={skus} setSkus={setSkus} logActivity={logActivity} showToast={showToast}/>}
               {view==="access"&&<AccessManagementView role={role} adminPin={adminPin} setAdminPin={setAdminPin} showToast={showToast} logActivity={logActivity}/>}
             </>
           )}
