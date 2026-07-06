@@ -112,20 +112,102 @@ function detectExtraColumns(headerKeys){
   return{
     dateKey:find(/purchase.?date|order.?date/i),
     buyerKey:find(/buyer.?name|buyer.?email|customer.?name/i),
+    orderIdKey:find(/^amazon.?order.?id$|^order.?id$/i),
     cityKey:find(/ship.?city/i),
     stateKey:find(/ship.?state|ship.?region/i),
     priceKey:find(/item.?price|unit.?price|^price$/i),
   };
 }
 
-function aggregateSalesLines(lines,groupFn,skuMap,comboMap){
+/* pad a numeric-looking value back to 2 digits — Excel silently drops leading
+   zeros from split-off timestamp fragments (e.g. "01" becomes 1) */
+function pad2(v){const s=String(v??"").trim();return s.length===1?"0"+s:s;}
+
+/* Some Amazon exports (via certain conversion tools) split ISO timestamp columns
+   like "purchase-date" and "last-updated-date" into 4 extra cells each, because the
+   colons in "2026-07-05T06:29:52+00:00" get treated as a delimiter somewhere in the
+   pipeline. This pushes every column after those date fields to the wrong position —
+   including sku and quantity — with the header row staying correctly labeled.
+   This function detects that exact signature and reconstructs the original columns
+   automatically, so the file can be uploaded exactly as exported, with no manual fixing. */
+function repairShiftedColumns(headerRow,dataRows){
+  const dateIdxs=headerRow.map((h,i)=>/date/i.test(h)?i:-1).filter(i=>i>=0);
+  if(!dateIdxs.length)return{repaired:false,rows:dataRows};
+
+  const excesses=dataRows.map(r=>r.length-headerRow.length).filter(e=>e>0);
+  if(!excesses.length)return{repaired:false,rows:dataRows}; // already aligned — nothing to do
+
+  const expected=dateIdxs.length*3; // each split date column contributes 3 extra cells (4 parts - 1)
+  const consistent=excesses.every(e=>e===expected);
+  if(!consistent)return{repaired:false,rows:dataRows,reason:"inconsistent"};
+
+  const repairedRows=dataRows.map(raw=>{
+    if(raw.length<=headerRow.length)return raw; // this particular row wasn't affected
+    const out=[];let pos=0;
+    headerRow.forEach((h,hi)=>{
+      if(dateIdxs.includes(hi)){
+        const parts=raw.slice(pos,pos+4);pos+=4;
+        out.push(`${parts[0]}:${pad2(parts[1])}:${parts[2]}:${pad2(parts[3])}`);
+      }else{
+        out.push(raw[pos]);pos+=1;
+      }
+    });
+    return out;
+  });
+  return{repaired:true,rows:repairedRows};
+}
+
+function aggregateSalesLines(lines,groupFn,skuMap,comboMap,sortMode="revenue"){
   const groups={};
   lines.forEach(l=>{
     const key=groupFn(l);
-    if(!groups[key])groups[key]={key,qty:0,revenue:0,cost:0,earning:0,lines:[]};
-    groups[key].qty+=l.qty;groups[key].revenue+=l.revenue;groups[key].cost+=l.cost;groups[key].earning+=l.earning;groups[key].lines.push(l);
+    if(!groups[key])groups[key]={key,qty:0,revenue:0,cost:0,earning:0,lines:[],minDate:l.date};
+    const g=groups[key];
+    g.qty+=l.qty;g.revenue+=l.revenue;g.cost+=l.cost;g.earning+=l.earning;g.lines.push(l);
+    if(new Date(l.date)<new Date(g.minDate))g.minDate=l.date;
   });
-  return Object.values(groups).sort((a,b)=>b.revenue-a.revenue);
+  const arr=Object.values(groups);
+  return sortMode==="chrono"?arr.sort((a,b)=>new Date(a.minDate)-new Date(b.minDate)):arr.sort((a,b)=>b.revenue-a.revenue);
+}
+
+/* Tiny dependency-free SVG bar chart — used for MoM / Weekly revenue trends */
+function TrendChart({groups}){
+  if(groups.length<2)return null; // need at least 2 points for a trend to mean anything
+  const W=Math.max(320,groups.length*90),H=180,padL=48,padB=28,padT=10;
+  const max=Math.max(1,...groups.map(g=>Math.max(g.revenue,g.cost)));
+  const barW=Math.min(28,(W-padL-20)/groups.length/2.4);
+  const chartW=W-padL-20;
+  const step=chartW/groups.length;
+  const scaleY=v=>H-padB-(v/max)*(H-padB-padT);
+  return(
+    <div className="overflow-x-auto mb-4">
+      <svg width={W} height={H} style={{minWidth:"100%"}}>
+        {[0,0.5,1].map(f=>(
+          <g key={f}>
+            <line x1={padL} x2={W-10} y1={scaleY(max*f)} y2={scaleY(max*f)} stroke={C.border} strokeWidth="1"/>
+            <text x={padL-6} y={scaleY(max*f)+3} fontSize="9" fill={C.lightText} textAnchor="end" fontFamily={F.mono}>{f===0?"0":fmt(Math.round(max*f))}</text>
+          </g>
+        ))}
+        {groups.map((g,i)=>{
+          const cx=padL+step*i+step/2;
+          const earnColor=g.earning>=0?C.mintGreen:C.zenkyPink;
+          return(
+            <g key={g.key}>
+              <rect x={cx-barW-2} y={scaleY(g.revenue)} width={barW} height={Math.max(0,H-padB-scaleY(g.revenue))} fill={C.zenkyPurple} rx="2"/>
+              <rect x={cx+2} y={scaleY(g.cost)} width={barW} height={Math.max(0,H-padB-scaleY(g.cost))} fill={C.zenkyOrange} rx="2"/>
+              <circle cx={cx} cy={scaleY(g.earning)} r="3" fill={earnColor}/>
+              <text x={cx} y={H-padB+14} fontSize="9" fill={C.lightText} textAnchor="middle" fontFamily={F.body}>{g.key.length>10?g.key.slice(0,9)+"…":g.key}</text>
+            </g>
+          );
+        })}
+      </svg>
+      <div className="flex items-center gap-4 mt-1 text-xs" style={{color:C.lightText,fontFamily:F.body}}>
+        <span className="inline-flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-sm inline-block" style={{backgroundColor:C.zenkyPurple}}/>Revenue</span>
+        <span className="inline-flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-sm inline-block" style={{backgroundColor:C.zenkyOrange}}/>Cost</span>
+        <span className="inline-flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-full inline-block" style={{backgroundColor:C.mintGreen}}/>Earning</span>
+      </div>
+    </div>
+  );
 }
 
 /* ═══ SHARED UI ═══ */
@@ -741,6 +823,8 @@ function BulkImportView({skus,combos,setSkus,setCombos,showToast,logActivity}){
   const [stage,setStage]=useState("idle");const [fileName,setFileName]=useState("");
   const [preview,setPreview]=useState({skus:[],combos:[]});const ref=useRef(null);
   const [importMode,setImportMode]=useState("merge"); // "merge" | "replace"
+  const [replaceConfirmText,setReplaceConfirmText]=useState("");
+  const [showReplaceConfirm,setShowReplaceConfirm]=useState(false);
 
   // Detect component SKUs referenced by imported combos that don't exist anywhere
   // (not in current catalog, not in the SKUs sheet being imported) — catches
@@ -771,10 +855,19 @@ function BulkImportView({skus,combos,setSkus,setCombos,showToast,logActivity}){
   }
   function confirmImport(){
     if(importMode==="replace"){
+      // Hard block: never allow Replace All to wipe the catalog with an empty parse result —
+      // 0 SKUs and 0 combos almost always means the file was missing a sheet (parsing failure),
+      // not a genuine intent to empty the catalog.
+      if(preview.skus.length===0&&preview.combos.length===0){
+        showToast("error","This file parsed as 0 SKUs and 0 combos — refusing to Replace All, since that would wipe your entire catalog. Check the file has both 'SKUs' and 'Combos' sheets, or use Merge instead.");
+        return;
+      }
+      if(!showReplaceConfirm){setShowReplaceConfirm(true);return;} // require an extra click + typed confirmation first
+      if(replaceConfirmText.trim().toUpperCase()!=="REPLACE"){showToast("error",'Type "REPLACE" exactly to confirm.');return;}
       // Replace mode: wipe existing data, use only what's in the file
       setSkus(preview.skus);
       setCombos(preview.combos.map(c=>({...c,id:c.id||Date.now().toString()+Math.random()})));
-      setStage("imported");
+      setStage("imported");setShowReplaceConfirm(false);setReplaceConfirmText("");
       showToast("success",`Replaced catalog: ${preview.skus.length} SKUs & ${preview.combos.length} combos. 🔄`);
       logActivity?.("Bulk Import — Replace All",`${fileName}: ${preview.skus.length} SKUs & ${preview.combos.length} combos`);
       return;
@@ -786,7 +879,7 @@ function BulkImportView({skus,combos,setSkus,setCombos,showToast,logActivity}){
     setSkus(ms);setCombos(mc);setStage("imported");showToast("success",`Imported ${preview.skus.length} SKUs & ${preview.combos.length} combos. ✨`);
     logActivity?.("Bulk Import — Merge",`${fileName}: ${preview.skus.length} SKUs & ${preview.combos.length} combos`);
   }
-  function reset(){setStage("idle");setPreview({skus:[],combos:[]});setFileName("");if(ref.current)ref.current.value="";}
+  function reset(){setStage("idle");setPreview({skus:[],combos:[]});setFileName("");setShowReplaceConfirm(false);setReplaceConfirmText("");if(ref.current)ref.current.value="";}
   return(
     <div>
       <SectionHeader title="Bulk Import" subtitle="Upload SKU & combo catalog from Excel or CSV."/>
@@ -794,6 +887,10 @@ function BulkImportView({skus,combos,setSkus,setCombos,showToast,logActivity}){
         <div className="space-y-2 text-sm" style={{fontFamily:F.body,color:C.darkText}}>
           <div><p className="font-bold mb-1">SKUs sheet:</p><code className="block bg-gray-100 p-2 rounded text-xs" style={{fontFamily:F.mono}}>SKU | Name | Stock | Reorder Level | Procurement Cost</code></div>
           <div><p className="font-bold mb-1">Combos sheet:</p><code className="block bg-gray-100 p-2 rounded text-xs" style={{fontFamily:F.mono}}>Combo Code | Combo Name | Components (SKU001:2;SKU002:1)</code></div>
+        </div>
+        <div className="flex gap-4 mt-3">
+          <button onClick={()=>downloadCsv("sku_import_template.csv","SKU,Name,Stock,Reorder Level,Procurement Cost\nZB-ST-MBK-002,Magnetic Bookmark Set,100,20,45\n")} className="inline-flex items-center gap-1.5 text-xs font-bold" style={{color:C.zenkyOrange,fontFamily:F.body}}><Download size={13}/>Download SKU template</button>
+          <button onClick={()=>downloadCsv("combo_import_template.csv","Combo Code,Combo Name,Components\nCOMBO-A,Starter Gift Set,ZB-ST-MBK-002:1;ZB-CP-ZPP-001:2\n")} className="inline-flex items-center gap-1.5 text-xs font-bold" style={{color:C.zenkyOrange,fontFamily:F.body}}><Download size={13}/>Download Combo template</button>
         </div>
       </Card>
       <Card>
@@ -826,7 +923,7 @@ function BulkImportView({skus,combos,setSkus,setCombos,showToast,logActivity}){
           <div className="mb-4 p-3 rounded-xl" style={{backgroundColor:C.bgLight}}>
             <label className="text-xs font-bold uppercase block mb-2" style={{color:C.lightText,fontFamily:F.body,letterSpacing:"0.02em"}}>Import Mode</label>
             <div className="grid grid-cols-2 gap-2">
-              <button onClick={()=>setImportMode("merge")} className="p-3 rounded-xl border-2 text-left transition-all" style={{borderColor:importMode==="merge"?C.zenkyPurple:C.border,backgroundColor:importMode==="merge"?"#F3EEFF":C.softWhite}}>
+              <button onClick={()=>{setImportMode("merge");setShowReplaceConfirm(false);setReplaceConfirmText("");}} className="p-3 rounded-xl border-2 text-left transition-all" style={{borderColor:importMode==="merge"?C.zenkyPurple:C.border,backgroundColor:importMode==="merge"?"#F3EEFF":C.softWhite}}>
                 <div className="font-bold text-sm flex items-center gap-1.5" style={{color:importMode==="merge"?C.zenkyPurple:C.darkText,fontFamily:F.display}}>{importMode==="merge"&&<Check size={14}/>}Merge</div>
                 <div className="text-xs mt-0.5" style={{color:C.lightText}}>Update matches, keep everything else</div>
               </button>
@@ -844,6 +941,23 @@ function BulkImportView({skus,combos,setSkus,setCombos,showToast,logActivity}){
             </div>
           )}
 
+          {showReplaceConfirm&&(
+            <Card className="mb-4" style={{borderColor:"#fecaca",backgroundColor:"#fff5f5"}}>
+              <div className="flex items-start gap-3">
+                <AlertTriangle size={20} style={{color:"#dc2626",flexShrink:0,marginTop:2}}/>
+                <div className="flex-1">
+                  <p className="font-bold text-sm mb-1" style={{color:"#991b1b",fontFamily:F.display}}>Final check: replace {skus.length} SKUs & {combos.length} combos with {preview.skus.length} SKUs & {preview.combos.length} combos?</p>
+                  <p className="text-xs mb-3" style={{color:"#991b1b"}}>This cannot be undone, and since sync is on, it updates on every device immediately.</p>
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <Input placeholder='Type "REPLACE" to confirm' value={replaceConfirmText} onChange={e=>setReplaceConfirmText(e.target.value)} className="max-w-xs" style={{borderColor:"#fecaca"}}/>
+                    <button onClick={confirmImport} className="px-4 py-2.5 rounded-xl text-sm font-bold text-white" style={{backgroundColor:"#dc2626",fontFamily:F.display}}>Replace Now</button>
+                    <button onClick={()=>{setShowReplaceConfirm(false);setReplaceConfirmText("");}} className="text-sm font-bold" style={{color:C.lightText,fontFamily:F.body}}>Cancel</button>
+                  </div>
+                </div>
+              </div>
+            </Card>
+          )}
+
           <div className="flex gap-2"><PrimaryButton onClick={confirmImport} tone={importMode==="replace"?"pink":undefined}><Check size={15}/>{importMode==="replace"?"Replace & Import":"Confirm Import"}</PrimaryButton><button onClick={reset} className="text-sm font-bold" style={{color:C.lightText}}>Cancel</button></div></div>)}
         {stage==="imported"&&(<div className="text-center py-8"><Check size={32} className="mx-auto mb-3" style={{color:C.mintGreen}}/><p className="font-bold text-lg" style={{color:C.darkText,fontFamily:F.display}}>Import complete!</p><p className="text-sm mt-1" style={{color:C.lightText}}>{preview.skus.length} SKUs & {preview.combos.length} combos added.</p><div className="mt-5"><PrimaryButton onClick={reset}><Upload size={15}/>Import another</PrimaryButton></div></div>)}
       </Card>
@@ -853,11 +967,35 @@ function BulkImportView({skus,combos,setSkus,setCombos,showToast,logActivity}){
 
 /* ═══ UPLOAD SALES ═══ */
 function UploadView({skus,combos,setSkus,reports,setReports,salesLines,setSalesLines,logActivity,showToast}){
+  const [channel,setChannel]=useState("amazon"); // "amazon" | "website"
   const [stage,setStage]=useState("idle");const [fileName,setFileName]=useState("");
-  const [aggregated,setAggregated]=useState([]);const [rawRows,setRawRows]=useState([]);const [extraCols,setExtraCols]=useState({});
+  const [rawRows,setRawRows]=useState([]);const [extraCols,setExtraCols]=useState({});
+  const [repairNote,setRepairNote]=useState(null);
+  const [skipDuplicates,setSkipDuplicates]=useState(true);
   const [weekLabel,setWeekLabel]=useState("");const ref=useRef(null);
   const skuMap=useMemo(()=>Object.fromEntries(skus.map(s=>[s.sku,s])),[skus]);
   const comboMap=useMemo(()=>Object.fromEntries(combos.map(c=>[c.sku,c])),[combos]);
+
+  // Every order-id already recorded from a previously applied report
+  const existingOrderIds=useMemo(()=>new Set(salesLines.map(l=>l.orderId).filter(Boolean)),[salesLines]);
+
+  // Which order-ids in THIS file have already been counted before
+  const duplicateOrderIds=useMemo(()=>{
+    if(!rawRows.length)return new Set();
+    return new Set(rawRows.filter(r=>r.orderId&&existingOrderIds.has(r.orderId)).map(r=>r.orderId));
+  },[rawRows,existingOrderIds]);
+
+  // Rows actually used for stock deduction / sales report, after optionally skipping duplicates
+  const effectiveRows=useMemo(()=>{
+    if(!skipDuplicates||duplicateOrderIds.size===0)return rawRows;
+    return rawRows.filter(r=>!(r.orderId&&duplicateOrderIds.has(r.orderId)));
+  },[rawRows,skipDuplicates,duplicateOrderIds]);
+
+  const aggregated=useMemo(()=>{
+    const totals={};
+    effectiveRows.forEach(r=>{if(!r.sku||isNaN(r.qty))return;totals[r.sku]=(totals[r.sku]||0)+r.qty;});
+    return Object.entries(totals).map(([code,qty])=>{const combo=combos.find(c=>c.sku===code),sku=skuMap[code];const mt=combo?"combo":sku?"direct":"unknown";return{code,qty,matchType:mt,matchName:combo?.name||sku?.name||"Not in catalog"};});
+  },[effectiveRows,combos,skuMap]);
 
   function processRows(rows){
     if(!rows?.length){showToast("error","File is empty.");return;}
@@ -865,53 +1003,150 @@ function UploadView({skus,combos,setSkus,reports,setReports,salesLines,setSalesL
     if(!sk||!qk){showToast("error",'Expected "sku" and "quantity" columns.');return;}
     const extra=detectExtraColumns(hk);
     setExtraCols(extra);
-    setRawRows(rows.map(r=>({sku:String(r[sk]||"").trim(),qty:parseFloat(r[qk]),date:extra.dateKey?r[extra.dateKey]:null,buyer:extra.buyerKey?String(r[extra.buyerKey]||"").trim():"",city:extra.cityKey?String(r[extra.cityKey]||"").trim():"",state:extra.stateKey?String(r[extra.stateKey]||"").trim():"",price:extra.priceKey?parseFloat(r[extra.priceKey]):null})).filter(r=>r.sku&&!isNaN(r.qty)));
-    const totals={};rows.forEach(r=>{const code=String(r[sk]||"").trim(),qty=parseFloat(r[qk]);if(!code||isNaN(qty))return;totals[code]=(totals[code]||0)+qty;});
-    setAggregated(Object.entries(totals).map(([code,qty])=>{const combo=combos.find(c=>c.sku===code),sku=skuMap[code];const mt=combo?"combo":sku?"direct":"unknown";return{code,qty,matchType:mt,matchName:combo?.name||sku?.name||"Not in catalog"};}));setStage("parsed");
+    setRawRows(rows.map(r=>({sku:String(r[sk]||"").trim(),qty:parseFloat(r[qk]),date:extra.dateKey?r[extra.dateKey]:null,orderId:extra.orderIdKey?String(r[extra.orderIdKey]||"").trim():"",buyer:extra.buyerKey?String(r[extra.buyerKey]||"").trim():"",city:extra.cityKey?String(r[extra.cityKey]||"").trim():"",state:extra.stateKey?String(r[extra.stateKey]||"").trim():"",price:extra.priceKey?parseFloat(r[extra.priceKey]):null})).filter(r=>r.sku&&!isNaN(r.qty)));
+    setStage("parsed");
   }
+
+  /* Turns raw array-of-arrays (with header row first) into array-of-objects,
+     auto-repairing Amazon's colon-split date corruption first if it's present. */
+  function fromRawGrid(grid){
+    if(!grid?.length)return[];
+    const headerRow=grid[0].map(h=>String(h??"").trim());
+    let dataRows=grid.slice(1).filter(r=>r.some(v=>v!==""&&v!=null));
+    if(channel==="amazon"){
+      const{repaired,rows:fixed,reason}=repairShiftedColumns(headerRow,dataRows);
+      if(repaired){
+        dataRows=fixed;
+        setRepairNote({type:"success",msg:"Detected and auto-corrected shifted columns caused by split timestamp fields — uploaded exactly as exported, no manual fixing needed."});
+      }else if(reason==="inconsistent"){
+        setRepairNote({type:"warning",msg:"Columns looked misaligned but didn't match the usual pattern — proceeding with the file as-is. Double-check the SKU/Quantity preview below before applying."});
+      }else{
+        setRepairNote(null);
+      }
+    }else{
+      setRepairNote(null);
+    }
+    return dataRows.map(r=>Object.fromEntries(headerRow.map((h,i)=>[h,r[i]])));
+  }
+
   function handleFile(file){
-    if(!file)return;setFileName(file.name);const ext=file.name.split(".").pop().toLowerCase();
-    if(ext==="csv")Papa.parse(file,{header:true,skipEmptyLines:true,complete:res=>processRows(res.data),error:()=>showToast("error","Could not parse CSV.")});
-    else if(ext==="xlsx"||ext==="xls"){const r=new FileReader();r.onload=e=>{try{const wb=XLSX.read(e.target.result,{type:"array"});processRows(XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]],{defval:""}));}catch{showToast("error","Could not parse spreadsheet.");}};r.readAsArrayBuffer(file);}
-    else showToast("error","Upload a .csv or .xlsx file.");
+    if(!file)return;setFileName(file.name);setRepairNote(null);const ext=file.name.split(".").pop().toLowerCase();
+    if(ext==="csv"){
+      Papa.parse(file,{header:false,skipEmptyLines:true,complete:res=>processRows(fromRawGrid(res.data)),error:()=>showToast("error","Could not parse CSV.")});
+    }else if(ext==="xlsx"||ext==="xls"){
+      const r=new FileReader();
+      r.onload=e=>{try{const wb=XLSX.read(e.target.result,{type:"array"});const grid=XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]],{header:1,defval:""});processRows(fromRawGrid(grid));}catch{showToast("error","Could not parse spreadsheet.");}};
+      r.readAsArrayBuffer(file);
+    }else showToast("error","Upload a .csv or .xlsx file.");
   }
+
   function applyReport(){
     if(!weekLabel.trim()){showToast("error","Add a report label.");return;}
+    const skippedCount=duplicateOrderIds.size;
     const skuBefore={};skus.forEach(s=>skuBefore[s.sku]=s.stock);
     const updated=Object.fromEntries(skus.map(s=>[s.sku,{...s}]));
     aggregated.forEach(({code,qty,matchType})=>{if(matchType==="combo"){const c=combos.find(x=>x.sku===code);c?.components?.forEach(comp=>{if(updated[comp.sku])updated[comp.sku].stock=Math.max(0,updated[comp.sku].stock-comp.qty*qty);});}else if(matchType==="direct"&&updated[code])updated[code].stock=Math.max(0,updated[code].stock-qty);});
     const newSkus=Object.values(updated);const bMap=Object.fromEntries(skus.map(s=>[s.sku,s])),aMap=Object.fromEntries(newSkus.map(s=>[s.sku,s]));
     const reportId=Date.now().toString();
-    const report={id:reportId,label:weekLabel.trim(),fileName,appliedAt:new Date().toISOString(),
+    const report={id:reportId,label:weekLabel.trim(),fileName,channel,appliedAt:new Date().toISOString(),
       skuLines:newSkus.map(s=>({sku:s.sku,name:s.name,opening:skuBefore[s.sku]??s.stock,sold:(skuBefore[s.sku]??s.stock)-s.stock,closing:s.stock,reorderLevel:s.reorderLevel,status:stockStatus(s)})),
       comboLines:combos.map(c=>({sku:c.sku,name:c.name,readyBefore:comboReadiness(c,bMap).ready,readyAfter:comboReadiness(c,aMap).ready,bottleneck:comboReadiness(c,aMap).bottleneck})),
-      unmatched:aggregated.filter(a=>a.matchType==="unknown")};
+      unmatched:aggregated.filter(a=>a.matchType==="unknown"),
+      skippedDuplicates:skippedCount};
 
-    // Build detailed sales lines (for ZenkyBox Sales Report analytics)
-    const newLines=rawRows.map((row,i)=>{
+    const newLines=effectiveRows.map((row,i)=>{
       const combo=comboMap[row.sku],sku=skuMap[row.sku];
       const matchType=combo?"combo":sku?"direct":"unknown";
       const name=combo?.name||sku?.name||row.sku;
       const unitCost=unitCostOf(row.sku,matchType,skuMap,comboMap);
       const cost=unitCost*row.qty;
       const revenue=row.price!=null&&!isNaN(row.price)?row.price*row.qty:0;
-      return{id:`${reportId}-${i}`,reportId,date:row.date||report.appliedAt,sku:row.sku,name,matchType,qty:row.qty,unitCost,cost,revenue,earning:revenue-cost,buyer:row.buyer||"",city:row.city||"",state:row.state||""};
+      return{id:`${reportId}-${i}`,reportId,channel,date:row.date||report.appliedAt,sku:row.sku,name,matchType,qty:row.qty,unitCost,cost,revenue,earning:revenue-cost,orderId:row.orderId||"",buyer:row.buyer||"",city:row.city||"",state:row.state||""};
     });
 
     setSkus(newSkus);setReports([report,...reports]);setSalesLines([...salesLines,...newLines]);
-    logActivity?.("Sales report applied",`"${weekLabel.trim()}" — ${fileName} (${aggregated.length} codes, ${newLines.length} order lines)`);
-    setStage("applied");showToast("success","Inventory updated. 📊");
+    logActivity?.("Sales report applied",`[${channel}] "${weekLabel.trim()}" — ${fileName} (${aggregated.length} codes, ${newLines.length} order lines${skippedCount?`, ${skippedCount} duplicate orders skipped`:""})`);
+    setStage("applied");showToast("success",skippedCount?`Inventory updated — ${skippedCount} duplicate order(s) skipped. 📊`:"Inventory updated. 📊");
   }
-  function reset(){setStage("idle");setAggregated([]);setRawRows([]);setFileName("");setWeekLabel("");if(ref.current)ref.current.value="";}
-  const hasExtras=extraCols.priceKey||extraCols.buyerKey||extraCols.cityKey;
+  function reset(){setStage("idle");setRawRows([]);setFileName("");setWeekLabel("");setRepairNote(null);setSkipDuplicates(true);if(ref.current)ref.current.value="";}
+
+  function downloadWebsiteTemplate(){
+    const csv="sku,quantity,item-price,purchase-date,buyer-name,buyer-email,ship-city,ship-state\n"+
+      "ZB-ST-MBK-002,2,99,2026-07-05T10:30:00,Anita Sharma,anita@example.com,Mumbai,MAHARASHTRA\n"+
+      "COMBO-A,1,499,2026-07-05T14:15:00,Rahul Verma,rahul@example.com,Delhi,DELHI\n";
+    downloadCsv("website_sales_template.csv",csv);
+  }
+  function downloadAmazonReference(){
+    const csv="amazon-order-id,sku,quantity,item-price,purchase-date,ship-city,ship-state\n"+
+      "402-6139183-3052307,ZB-ST-MBK-002,1,99,2026-07-05T06:29:52+00:00,PUNE,MAHARASHTRA\n"+
+      "171-7143323-7105914,OE-D495-NPMY,1,499,2026-07-04T18:56:02+00:00,PATNA,BIHAR\n";
+    downloadCsv("amazon_sales_reference.csv",csv);
+  }
+
+  const hasExtras=extraCols.priceKey||extraCols.buyerKey||extraCols.cityKey||extraCols.orderIdKey;
   return(
     <div>
-      <SectionHeader title="Upload Sales Report" subtitle="Amazon weekly sales CSV/XLSX — combos auto-deduct component SKUs."/>
+      <SectionHeader title="Upload Sales Report" subtitle="Amazon reports upload exactly as exported — combos auto-deduct component SKUs."/>
+
+      {/* Channel selector */}
+      <div className="flex gap-2 mb-5">
+        {[{id:"amazon",label:"Amazon Seller Report"},{id:"website",label:"Website Sales"}].map(c=>(
+          <button key={c.id} onClick={()=>{setChannel(c.id);reset();}} className="flex-1 sm:flex-none px-4 py-2.5 rounded-full text-sm font-bold transition-colors" style={{backgroundColor:channel===c.id?C.zenkyPurple:C.softWhite,color:channel===c.id?C.softWhite:C.darkText,border:`2px solid ${channel===c.id?C.zenkyPurple:C.border}`,fontFamily:F.display}}>
+            {c.label}
+          </button>
+        ))}
+      </div>
+
       <Card>
-        {stage==="idle"&&(<div className="rounded-2xl border-2 border-dashed p-8 text-center" style={{borderColor:C.zenkyPink,backgroundColor:"#FFF8FC"}}><Upload size={32} className="mx-auto mb-3" style={{color:C.zenkyPink}}/><p className="font-bold mb-4" style={{color:C.darkText,fontFamily:F.display}}>Choose your Amazon weekly sales report</p><input ref={ref} type="file" accept=".csv,.xlsx,.xls" className="hidden" onChange={e=>handleFile(e.target.files[0])}/><PrimaryButton onClick={()=>ref.current?.click()}><Upload size={15}/>Select File</PrimaryButton></div>)}
+        {stage==="idle"&&(
+          <div>
+            <div className="rounded-2xl border-2 border-dashed p-8 text-center" style={{borderColor:C.zenkyPink,backgroundColor:"#FFF8FC"}}>
+              <Upload size={32} className="mx-auto mb-3" style={{color:C.zenkyPink}}/>
+              <p className="font-bold mb-1" style={{color:C.darkText,fontFamily:F.display}}>
+                {channel==="amazon"?"Choose your Amazon sales report — upload it exactly as downloaded":"Choose your website sales export"}
+              </p>
+              <p className="text-xs mb-4" style={{color:C.lightText}}>
+                {channel==="amazon"?"No need to fix or reformat the file first — shifted/corrupted columns are detected and repaired automatically.":"CSV or Excel with sku, quantity, price, buyer, and location columns."}
+              </p>
+              <input ref={ref} type="file" accept=".csv,.xlsx,.xls" className="hidden" onChange={e=>handleFile(e.target.files[0])}/>
+              <PrimaryButton onClick={()=>ref.current?.click()}><Upload size={15}/>Select File</PrimaryButton>
+              <div className="mt-4">
+                <button onClick={channel==="amazon"?downloadAmazonReference:downloadWebsiteTemplate} className="inline-flex items-center gap-1.5 text-xs font-bold" style={{color:C.zenkyOrange,fontFamily:F.body}}>
+                  <Download size={13}/>{channel==="amazon"?"Download format reference":"Download blank template"}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
         {stage==="parsed"&&(<div><div className="flex items-center justify-between mb-4 flex-wrap gap-2"><span className="text-sm" style={{color:C.darkText}}>Parsed <strong>{fileName}</strong> — {aggregated.length} codes</span><button onClick={reset} className="text-sm font-bold" style={{color:C.lightText}}>Change file</button></div>
-          {hasExtras&&<div className="mb-3 p-2.5 rounded-xl text-xs flex items-center gap-2" style={{backgroundColor:"#F0FDE8",color:"#166534"}}><Check size={14}/>Detected {[extraCols.priceKey&&"price",extraCols.buyerKey&&"buyer",extraCols.cityKey&&"location",extraCols.dateKey&&"date"].filter(Boolean).join(", ")} — will populate ZenkyBox Sales Report.</div>}
+          {repairNote&&<div className="mb-3 p-2.5 rounded-xl text-xs flex items-center gap-2" style={{backgroundColor:repairNote.type==="success"?"#F0FDE8":"#FFF3E6",color:repairNote.type==="success"?"#166534":"#9a5b0f"}}><Check size={14}/>{repairNote.msg}</div>}
+          {hasExtras&&<div className="mb-3 p-2.5 rounded-xl text-xs flex items-center gap-2" style={{backgroundColor:"#F0FDE8",color:"#166534"}}><Check size={14}/>Detected {[extraCols.priceKey&&"price",extraCols.buyerKey&&"buyer",extraCols.cityKey&&"location",extraCols.dateKey&&"date",extraCols.orderIdKey&&"order ID"].filter(Boolean).join(", ")} — will populate ZenkyBox Sales Report.</div>}
           {!hasExtras&&<div className="mb-3 p-2.5 rounded-xl text-xs flex items-center gap-2" style={{backgroundColor:C.bgLight,color:C.lightText}}><AlertTriangle size={14}/>No price/buyer/location columns detected — stock will update, but Sales Report earning/buyer/location breakdowns won't have data for this upload.</div>}
+          {duplicateOrderIds.size>0&&(
+            <div className="mb-3 p-3 rounded-xl text-xs" style={{backgroundColor:"#fff5f5",border:"2px solid #fecaca"}}>
+              <div className="flex items-start gap-2">
+                <AlertTriangle size={16} style={{color:"#dc2626",flexShrink:0,marginTop:1}}/>
+                <div className="flex-1">
+                  <p className="font-bold mb-1" style={{color:"#991b1b"}}>
+                    {duplicateOrderIds.size} order{duplicateOrderIds.size!==1?"s":""} already recorded from a previous upload
+                  </p>
+                  <p style={{color:"#991b1b"}}>
+                    These order IDs exist in an earlier applied report — likely the same sales exported through a different report format. Counting them again would double-deduct stock and inflate Sales Report totals.
+                  </p>
+                  <div className="mt-2 max-h-20 overflow-y-auto text-xs" style={{fontFamily:F.mono,color:"#991b1b"}}>
+                    {Array.from(duplicateOrderIds).slice(0,8).join(", ")}{duplicateOrderIds.size>8?` …and ${duplicateOrderIds.size-8} more`:""}
+                  </div>
+                  <label className="flex items-center gap-2 mt-2.5 cursor-pointer">
+                    <input type="checkbox" checked={skipDuplicates} onChange={e=>setSkipDuplicates(e.target.checked)}/>
+                    <span className="font-bold" style={{color:"#991b1b"}}>Skip these duplicate orders when applying (recommended)</span>
+                  </label>
+                </div>
+              </div>
+            </div>
+          )}
+          <div className="text-xs mb-2" style={{color:C.lightText}}>
+            {skipDuplicates&&duplicateOrderIds.size>0?`Showing ${aggregated.length} codes from ${effectiveRows.length} order lines (${duplicateOrderIds.size} duplicate orders excluded)`:`${aggregated.length} codes from ${effectiveRows.length} order lines`}
+          </div>
           <div className="overflow-x-auto mb-4"><table className="w-full text-sm"><thead><tr style={{color:C.lightText}}><th className="py-2 pr-3 text-left font-bold text-xs uppercase">Code</th><th className="py-2 pr-3 text-left font-bold text-xs uppercase">Qty</th><th className="py-2 pr-3 text-left font-bold text-xs uppercase">Type</th><th className="py-2 pr-3 text-left font-bold text-xs uppercase">Name</th></tr></thead><tbody>{aggregated.map(a=><tr key={a.code} className="border-t" style={{borderColor:C.border}}><td className="py-2 pr-3" style={{fontFamily:F.mono,fontWeight:600}}>{a.code}</td><td className="py-2 pr-3" style={{fontFamily:F.mono}}>{fmt(a.qty)}</td><td className="py-2 pr-3">{a.matchType==="combo"?<Stamp tone="mint">Combo</Stamp>:a.matchType==="direct"?<Stamp tone="purple">SKU</Stamp>:<Stamp tone="pink">Unknown</Stamp>}</td><td className="py-2 pr-3" style={{color:a.matchType==="unknown"?C.zenkyPink:C.darkText}}>{a.matchName}</td></tr>)}</tbody></table></div>
           <div className="flex items-end gap-3 flex-wrap"><div className="w-full sm:w-64"><label className="text-xs font-bold block mb-1" style={{color:C.lightText}}>Report label</label><Input placeholder="e.g. Week of Jun 16–22" value={weekLabel} onChange={e=>setWeekLabel(e.target.value)}/></div><PrimaryButton onClick={applyReport}><Check size={15}/>Apply to inventory</PrimaryButton></div></div>)}
         {stage==="applied"&&(<div className="text-center py-8"><Check size={32} className="mx-auto mb-3" style={{color:C.mintGreen}}/><p className="font-bold text-lg" style={{color:C.darkText,fontFamily:F.display}}>Report applied</p><p className="text-sm mt-1" style={{color:C.lightText}}>View breakdown in Reports tab, or full analytics in ZenkyBox Sales Report.</p><div className="mt-5"><PrimaryButton onClick={reset}><Upload size={15}/>Upload another</PrimaryButton></div></div>)}
@@ -967,7 +1202,7 @@ function ReportsView({reports,skus,combos}){
             return(
               <Card key={r.id}>
                 <button className="w-full flex items-center justify-between gap-3 text-left" onClick={()=>setOpenId(isOpen?null:r.id)}>
-                  <div className="flex items-center gap-2">{isOpen?<ChevronDown size={16}/>:<ChevronRight size={16}/>}<div><div className="font-bold text-sm" style={{color:C.darkText,fontFamily:F.display}}>{r.label}</div><div className="text-xs" style={{color:C.lightText,fontFamily:F.mono}}>Applied {new Date(r.appliedAt).toLocaleDateString()} · {r.fileName}</div></div></div>
+                  <div className="flex items-center gap-2">{isOpen?<ChevronDown size={16}/>:<ChevronRight size={16}/>}<div><div className="font-bold text-sm flex items-center gap-2" style={{color:C.darkText,fontFamily:F.display}}>{r.label}{r.channel&&<Stamp tone={r.channel==="amazon"?"orange":"blue"}>{r.channel}</Stamp>}</div><div className="text-xs" style={{color:C.lightText,fontFamily:F.mono}}>Applied {new Date(r.appliedAt).toLocaleDateString()} · {r.fileName}</div></div></div>
                   <div className="flex items-center gap-2 flex-wrap justify-end">{lowCount>0&&<Stamp tone="orange">{lowCount} low</Stamp>}{shortCombos>0&&<Stamp tone="pink">{shortCombos} short</Stamp>}{r.unmatched?.length>0&&<Stamp tone="purple">{r.unmatched.length} unmatched</Stamp>}</div>
                 </button>
                 {isOpen&&(
@@ -975,6 +1210,7 @@ function ReportsView({reports,skus,combos}){
                     <div className="flex items-center justify-between mb-3"><h4 className="font-bold text-sm" style={{color:C.darkText,fontFamily:F.display}}>SKU Breakdown</h4><button onClick={()=>exportReport(r)} className="inline-flex items-center gap-1 text-xs font-bold" style={{color:C.zenkyOrange}}><Download size={13}/>Export CSV</button></div>
                     <div className="overflow-x-auto mb-4"><table className="w-full text-sm"><thead><tr style={{color:C.lightText}}><th className="py-1.5 pr-3 text-left font-bold text-xs uppercase">SKU</th><th className="py-1.5 pr-3 text-left font-bold text-xs uppercase">Name</th><th className="py-1.5 pr-3 text-left font-bold text-xs uppercase">Opening</th><th className="py-1.5 pr-3 text-left font-bold text-xs uppercase">Sold</th><th className="py-1.5 pr-3 text-left font-bold text-xs uppercase">Closing</th><th className="py-1.5 pr-3 text-left font-bold text-xs uppercase">Status</th></tr></thead><tbody>{r.skuLines?.map(l=><tr key={l.sku} className="border-t" style={{borderColor:C.border}}><td className="py-1.5 pr-3" style={{fontFamily:F.mono,fontWeight:600}}>{l.sku}</td><td className="py-1.5 pr-3">{l.name}</td><td className="py-1.5 pr-3" style={{fontFamily:F.mono}}>{fmt(l.opening)}</td><td className="py-1.5 pr-3" style={{fontFamily:F.mono}}>{fmt(l.sold)}</td><td className="py-1.5 pr-3" style={{fontFamily:F.mono}}>{fmt(l.closing)}</td><td className="py-1.5 pr-3">{statusStamp(l.status)}</td></tr>)}</tbody></table></div>
                     {r.unmatched?.length>0&&<div className="mt-3 text-xs flex items-start gap-2" style={{color:C.zenkyPink}}><AlertTriangle size={14} className="mt-0.5"/><span>{r.unmatched.length} unmatched: {r.unmatched.map(u=>u.code).join(", ")}</span></div>}
+                    {r.skippedDuplicates>0&&<div className="mt-2 text-xs flex items-center gap-2" style={{color:"#166534"}}><Check size={13}/><span>{r.skippedDuplicates} duplicate order{r.skippedDuplicates!==1?"s":""} skipped — already recorded in an earlier report.</span></div>}
                   </div>
                 )}
               </Card>
@@ -1155,11 +1391,18 @@ function SalesReportsView({salesLines,skus,combos}){
     );
   }
 
-  function GroupedReport({groupFn,emptyMsg}){
-    const groups=useMemo(()=>aggregateSalesLines(salesLines,groupFn,skuMap,comboMap),[salesLines,skuMap,comboMap]);
+  function GroupedReport({groupFn,emptyMsg,chrono}){
+    const groups=useMemo(()=>aggregateSalesLines(salesLines,groupFn,skuMap,comboMap,chrono?"chrono":"revenue"),[salesLines,skuMap,comboMap,chrono]);
     if(!groups.length)return<Empty icon={BarChart3} title="No sales data yet" message={emptyMsg}/>;
     return(
-      <div className="space-y-4">
+      <div>
+        {chrono&&groups.length>=2&&(
+          <Card className="mb-4">
+            <h4 className="text-sm font-bold mb-3" style={{color:C.darkText,fontFamily:F.display}}>Trend</h4>
+            <TrendChart groups={groups}/>
+          </Card>
+        )}
+        <div className="space-y-4">
         {groups.map(g=>{
           const{skuRows,comboRows}=skuComboBreakdown(g.lines);
           return(
@@ -1181,6 +1424,7 @@ function SalesReportsView({salesLines,skus,combos}){
             </Card>
           );
         })}
+        </div>
       </div>
     );
   }
@@ -1228,8 +1472,8 @@ function SalesReportsView({salesLines,skus,combos}){
           </Card>
         )
       )}
-      {tab==="mom"&&<GroupedReport groupFn={l=>monthKey(l.date)} emptyMsg="Upload sales with a date column to see month-over-month trends."/>}
-      {tab==="weekly"&&<GroupedReport groupFn={l=>weekKey(l.date)} emptyMsg="Upload sales with a date column to see weekly trends."/>}
+      {tab==="mom"&&<GroupedReport groupFn={l=>monthKey(l.date)} emptyMsg="Upload sales with a date column to see month-over-month trends." chrono/>}
+      {tab==="weekly"&&<GroupedReport groupFn={l=>weekKey(l.date)} emptyMsg="Upload sales with a date column to see weekly trends." chrono/>}
       {tab==="buyer"&&<GroupedReport groupFn={l=>l.buyer||"Unknown buyer"} emptyMsg="Upload sales with a buyer name/email column to see buyer-wise data."/>}
       {tab==="location"&&<GroupedReport groupFn={l=>[l.city,l.state].filter(Boolean).join(", ")||"Unknown location"} emptyMsg="Upload sales with ship-city/ship-state columns to see location-wise data."/>}
     </div>
@@ -1237,8 +1481,12 @@ function SalesReportsView({salesLines,skus,combos}){
 }
 
 /* ═══ SOURCE DATA (Admin only) ═══ */
-function SourceDataView({activityLog,synced}){
+function SourceDataView({activityLog,synced,salesLines,setSalesLines,reports,setReports,skus,setSkus,logActivity,showToast}){
   const dbUrl=process.env.NEXT_PUBLIC_SUPABASE_URL||"";
+  const [scanResult,setScanResult]=useState(null); // {dupeGroups, extraQtyBySku, linesToRemove}
+  const [confirmText,setConfirmText]=useState("");
+  const [showConfirm,setShowConfirm]=useState(false);
+
   function exportLog(){
     let csv="Date,Action,Detail,Role\n";
     activityLog.forEach(a=>csv+=`${a.date},"${a.action}","${a.detail||""}",${a.role}\n`);
@@ -1254,6 +1502,59 @@ function SourceDataView({activityLog,synced}){
     });
     return Object.entries(groups); // insertion order = newest first since log is prepended
   },[activityLog]);
+
+  // Scan for sales lines that share the same order-id + sku — these are almost
+  // certainly the same real-world sale counted more than once (e.g. the same
+  // orders exported through two different Amazon report types and both uploaded).
+  function scanForDuplicates(){
+    const groups={};
+    salesLines.forEach(line=>{
+      if(!line.orderId)return; // can't dedupe without an order id — leave these alone
+      const key=`${line.orderId}::${line.sku}`;
+      if(!groups[key])groups[key]=[];
+      groups[key].push(line);
+    });
+    const dupeGroups=Object.values(groups).filter(g=>g.length>1);
+    const extraQtyBySku={};
+    let linesToRemove=[];
+    dupeGroups.forEach(group=>{
+      const [keep,...extras]=group; // keep the first occurrence, remove the rest
+      extras.forEach(l=>{
+        extraQtyBySku[l.sku]=(extraQtyBySku[l.sku]||0)+l.qty;
+        linesToRemove.push(l.id);
+      });
+    });
+    setScanResult({dupeGroups,extraQtyBySku,linesToRemove,totalDuplicateLines:linesToRemove.length});
+    setShowConfirm(false);setConfirmText("");
+  }
+
+  function applyCleanup(){
+    if(confirmText.trim().toUpperCase()!=="CLEAN"){showToast("error",'Type "CLEAN" exactly to confirm.');return;}
+    const removeSet=new Set(scanResult.linesToRemove);
+    setSalesLines(salesLines.filter(l=>!removeSet.has(l.id)));
+    // Restore stock that was erroneously deducted by the duplicate applies
+    setSkus(skus.map(s=>scanResult.extraQtyBySku[s.sku]?{...s,stock:s.stock+scanResult.extraQtyBySku[s.sku]}:s));
+    logActivity?.("Cleaned duplicate sales data",`Removed ${scanResult.totalDuplicateLines} duplicate order lines, restored stock for ${Object.keys(scanResult.extraQtyBySku).length} SKUs`);
+    showToast("success",`Removed ${scanResult.totalDuplicateLines} duplicate entries and restored stock. ✨`);
+    setScanResult(null);setShowConfirm(false);setConfirmText("");
+  }
+
+  const [showFlushConfirm,setShowFlushConfirm]=useState(false);
+  const [flushConfirmText,setFlushConfirmText]=useState("");
+
+  function flushAllSalesData(){
+    if(flushConfirmText.trim().toUpperCase()!=="FLUSH"){showToast("error",'Type "FLUSH" exactly to confirm.');return;}
+    const lineCount=salesLines.length,reportCount=reports.length;
+    setSalesLines([]);
+    setReports([]);
+    // Reset every SKU's stock back to its recorded baseline, undoing every sales
+    // deduction ever applied — the clean-slate option when duplicate/corrupted
+    // uploads have made the current numbers untrustworthy.
+    setSkus(skus.map(s=>({...s,stock:s.initialStock??s.stock})));
+    logActivity?.("Flushed all sales data",`Cleared ${lineCount} sale lines and ${reportCount} reports; reset stock to initial baseline for all SKUs`);
+    showToast("success","All sales data flushed and stock reset to baseline. 🗑️");
+    setShowFlushConfirm(false);setFlushConfirmText("");
+  }
 
   return(
     <div>
@@ -1272,6 +1573,84 @@ function SourceDataView({activityLog,synced}){
         ):(
           <div className="text-sm p-3 rounded-xl" style={{backgroundColor:"#FFF3E6",color:"#9a5b0f"}}>
             No database connected — data is stored in this browser's local storage only (not synced across devices). See SUPABASE_SETUP.md to connect a free cross-device database.
+          </div>
+        )}
+      </Card>
+
+      <Card className="mb-6">
+        <div className="flex items-center gap-2 mb-3">
+          <RefreshCw size={18} style={{color:C.zenkyPurple}}/>
+          <h3 className="font-bold text-lg" style={{fontFamily:F.display,color:C.darkText}}>Clean Duplicate Sales Data</h3>
+        </div>
+        <p className="text-sm mb-4" style={{color:C.lightText,fontFamily:F.body}}>
+          Scans every recorded sale for repeated order-id + SKU combinations — the signature of the same real sale being uploaded more than once (e.g. via two different Amazon report types covering the same dates). Removes the extras and restores any stock that was wrongly deducted twice.
+        </p>
+        {!scanResult&&<PrimaryButton onClick={scanForDuplicates}><Search size={15}/>Scan for Duplicates</PrimaryButton>}
+
+        {scanResult&&scanResult.totalDuplicateLines===0&&(
+          <div className="flex items-center gap-2 p-3 rounded-xl text-sm" style={{backgroundColor:"#F0FDE8",color:"#166534"}}>
+            <Check size={16}/>No duplicates found — your sales data looks clean.
+          </div>
+        )}
+
+        {scanResult&&scanResult.totalDuplicateLines>0&&(
+          <div>
+            <div className="p-3.5 rounded-xl mb-4" style={{backgroundColor:"#fff5f5",border:"2px solid #fecaca"}}>
+              <p className="font-bold text-sm mb-2" style={{color:"#991b1b",fontFamily:F.display}}>
+                Found {scanResult.totalDuplicateLines} duplicate order line{scanResult.totalDuplicateLines!==1?"s":""} across {scanResult.dupeGroups.length} order{scanResult.dupeGroups.length!==1?"s":""}
+              </p>
+              <p className="text-xs mb-3" style={{color:"#991b1b"}}>Stock will be restored for these SKUs (the amount that was over-deducted):</p>
+              <div className="space-y-1 mb-3">
+                {Object.entries(scanResult.extraQtyBySku).map(([sku,qty])=>(
+                  <div key={sku} className="text-xs flex justify-between" style={{fontFamily:F.mono,color:"#991b1b"}}>
+                    <span>{sku}</span><span className="font-bold">+{qty} units</span>
+                  </div>
+                ))}
+              </div>
+              <p className="text-xs" style={{color:"#991b1b"}}>Note: this fixes current stock and Sales Report totals. Past entries in the Reports tab are historical snapshots and won't be rewritten.</p>
+            </div>
+            {!showConfirm?(
+              <div className="flex gap-2">
+                <PrimaryButton onClick={()=>setShowConfirm(true)} tone="pink"><Check size={15}/>Remove Duplicates & Restore Stock</PrimaryButton>
+                <button onClick={()=>setScanResult(null)} className="text-sm font-bold" style={{color:C.lightText}}>Cancel</button>
+              </div>
+            ):(
+              <div className="flex items-center gap-2 flex-wrap">
+                <Input placeholder='Type "CLEAN" to confirm' value={confirmText} onChange={e=>setConfirmText(e.target.value)} className="max-w-xs" style={{borderColor:"#fecaca"}}/>
+                <button onClick={applyCleanup} className="px-4 py-2.5 rounded-xl text-sm font-bold text-white" style={{backgroundColor:"#dc2626",fontFamily:F.display}}>Confirm Cleanup</button>
+                <button onClick={()=>{setShowConfirm(false);setConfirmText("");}} className="text-sm font-bold" style={{color:C.lightText,fontFamily:F.body}}>Cancel</button>
+              </div>
+            )}
+          </div>
+        )}
+      </Card>
+
+      <Card className="mb-6" style={{borderColor:"#fecaca"}}>
+        <div className="flex items-center gap-2 mb-3">
+          <Trash2 size={18} style={{color:"#dc2626"}}/>
+          <h3 className="font-bold text-lg" style={{fontFamily:F.display,color:"#991b1b"}}>Flush All Sales Data (Clean Slate)</h3>
+        </div>
+        <p className="text-sm mb-1" style={{color:C.darkText,fontFamily:F.body}}>
+          For when duplicate/corrupted uploads have made current numbers untrustworthy and you'd rather start fresh than fix them piece by piece. This action:
+        </p>
+        <ul className="text-sm mb-4 list-disc pl-5 space-y-0.5" style={{color:C.darkText,fontFamily:F.body}}>
+          <li>Clears every sale line ({salesLines.length} currently) — Sales Report goes back to zero</li>
+          <li>Clears every applied report ({reports.length} currently) — Reports tab goes back to zero</li>
+          <li>Resets every SKU's stock back to its original recorded baseline — undoing every deduction ever applied</li>
+          <li><strong>Keeps</strong> your SKU Catalog and Gift Combos exactly as they are — nothing about product definitions is touched</li>
+        </ul>
+        {!showFlushConfirm?(
+          <button onClick={()=>setShowFlushConfirm(true)} className="inline-flex items-center gap-2 px-4 py-2.5 rounded-full text-sm font-bold text-white" style={{backgroundColor:"#dc2626",fontFamily:F.display}}>
+            <Trash2 size={15}/>Flush All Sales Data
+          </button>
+        ):(
+          <div className="p-3.5 rounded-xl" style={{backgroundColor:"#fff5f5",border:"2px solid #fecaca"}}>
+            <p className="font-bold text-sm mb-2" style={{color:"#991b1b",fontFamily:F.display}}>This cannot be undone. Type "FLUSH" to confirm.</p>
+            <div className="flex items-center gap-2 flex-wrap">
+              <Input placeholder='Type "FLUSH" to confirm' value={flushConfirmText} onChange={e=>setFlushConfirmText(e.target.value)} className="max-w-xs" style={{borderColor:"#fecaca"}}/>
+              <button onClick={flushAllSalesData} className="px-4 py-2.5 rounded-xl text-sm font-bold text-white" style={{backgroundColor:"#dc2626",fontFamily:F.display}}>Confirm Flush</button>
+              <button onClick={()=>{setShowFlushConfirm(false);setFlushConfirmText("");}} className="text-sm font-bold" style={{color:C.lightText,fontFamily:F.body}}>Cancel</button>
+            </div>
           </div>
         )}
       </Card>
@@ -1369,53 +1748,104 @@ export default function App(){
   const [activityLog,setActivityLog]=useState([]);
   const [adminPin,setAdminPinState]=useState("");
   const [loaded,setLoaded]=useState(false);
+  const [canSave,setCanSave]=useState(false); // only true once a load has genuinely succeeded — prevents overwriting real data with an empty state after a failed fetch
+  const [loadError,setLoadError]=useState(false);
   const [view,setView]=useState("dashboard");
   const [sidebarOpen,setSidebarOpen]=useState(false);
   const [toast,setToast]=useState(null);
   const [synced,setSynced]=useState(false);
   const [role,setRole]=useState("staff"); // per-device only, not shared across users
 
-  // Load initial data
+  // Tracks the newest updated_at timestamp we're aware of — from our own last
+  // save OR the last realtime update we accepted. Any incoming realtime event
+  // that isn't strictly newer than this gets ignored, since it's either an
+  // echo of our own write or a stale/out-of-order delivery. This is what
+  // prevents "add a SKU, count flickers back down" — a real race that existed
+  // because Supabase broadcasts writes back to the client that made them.
+  const lastKnownUpdatedAt=useRef(null);
+
+  function applyLoadedData(data){
+    setSkus(data?.skus||[]);setCombos(data?.combos||[]);setReports(data?.reports||[]);
+    setSalesLines(data?.salesLines||[]);setActivityLog(data?.activityLog||[]);
+    setAdminPinState(data?.adminPin||"");
+  }
+
+  // Load initial data — retries a couple of times on failure before giving up,
+  // since the most common failure window is a fresh deploy's cold start.
   useEffect(()=>{
+    let cancelled=false;
     (async()=>{
-      try{
-        const data=await loadData();
-        if(data){
-          setSkus(data.skus||[]);setCombos(data.combos||[]);setReports(data.reports||[]);
-          setSalesLines(data.salesLines||[]);setActivityLog(data.activityLog||[]);
-          setAdminPinState(data.adminPin||"");
+      let attempt=0;
+      let succeeded=false;
+      while(attempt<3&&!cancelled){
+        const result=await loadData();
+        if(result.ok){
+          applyLoadedData(result.data);
+          if(result.updatedAt)lastKnownUpdatedAt.current=result.updatedAt;
+          setSynced(hasSync());
+          setCanSave(true); // safe to save now — we know the true remote/local state
+          setLoadError(false);
+          succeeded=true;
+          break;
         }
+        attempt++;
+        if(attempt<3)await new Promise(res=>setTimeout(res,800*attempt)); // brief backoff before retry
+      }
+      if(!cancelled&&!succeeded){
+        // All retries failed — do NOT enable saving. Show a visible warning instead
+        // of silently risking an overwrite of real remote data.
+        setLoadError(true);
         setSynced(hasSync());
-        // Restore this device's unlocked session (not shared — each device unlocks independently)
-        if(typeof window!=="undefined"&&sessionStorage.getItem("zenkybox-role")==="admin")setRole("admin");
-      }catch(e){console.error(e);}
-      setLoaded(true);
+      }
+      if(typeof window!=="undefined"&&sessionStorage.getItem("zenkybox-role")==="admin")setRole("admin");
+      if(!cancelled)setLoaded(true);
     })();
+    return()=>{cancelled=true;};
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   },[]);
 
-  // Subscribe to real-time updates (Supabase)
+  // Subscribe to real-time updates (Supabase) — only apply genuinely newer changes
   useEffect(()=>{
     let unsub=null;
     (async()=>{
-      unsub=await subscribeToData(data=>{
-        if(data){
-          setSkus(data.skus||[]);setCombos(data.combos||[]);setReports(data.reports||[]);
-          setSalesLines(data.salesLines||[]);setActivityLog(data.activityLog||[]);
-          setAdminPinState(data.adminPin||"");
+      unsub=await subscribeToData((data,updatedAt)=>{
+        if(!data)return;
+        if(updatedAt&&lastKnownUpdatedAt.current&&new Date(updatedAt)<=new Date(lastKnownUpdatedAt.current)){
+          return; // stale or self-echo — we already have this or something newer
         }
+        if(updatedAt)lastKnownUpdatedAt.current=updatedAt;
+        applyLoadedData(data);
       });
     })();
     return()=>{if(unsub)unsub();};
   },[]);
 
-  // Save whenever data changes
+  // Save whenever data changes — gated on canSave, so a failed initial load
+  // can never result in writing an empty catalog over real remote data.
   const saveTimeout=useRef(null);
   useEffect(()=>{
-    if(!loaded)return;
+    if(!loaded||!canSave)return;
     clearTimeout(saveTimeout.current);
-    saveTimeout.current=setTimeout(()=>{saveData({skus,combos,reports,salesLines,activityLog,adminPin}).catch(()=>{});},500);
+    saveTimeout.current=setTimeout(()=>{
+      saveData({skus,combos,reports,salesLines,activityLog,adminPin})
+        .then(timestamp=>{if(timestamp)lastKnownUpdatedAt.current=timestamp;})
+        .catch(()=>{});
+    },500);
     return()=>clearTimeout(saveTimeout.current);
-  },[skus,combos,reports,salesLines,activityLog,adminPin,loaded]);
+  },[skus,combos,reports,salesLines,activityLog,adminPin,loaded,canSave]);
+
+  function retryLoad(){
+    setLoadError(false);setLoaded(false);
+    (async()=>{
+      const result=await loadData();
+      if(result.ok){
+        applyLoadedData(result.data);
+        if(result.updatedAt)lastKnownUpdatedAt.current=result.updatedAt;
+        setCanSave(true);setLoadError(false);
+      }else setLoadError(true);
+      setLoaded(true);
+    })();
+  }
 
   function showToast(type,msg){setToast({type,msg});setTimeout(()=>setToast(null),3500);}
 
@@ -1456,6 +1886,22 @@ export default function App(){
     </div>
   );
 
+  if(loadError)return(
+    <div className="flex items-center justify-center h-screen p-6" style={{backgroundColor:C.softWhite}}>
+      <div className="max-w-md text-center">
+        <AlertTriangle size={40} style={{color:"#dc2626",margin:"0 auto"}}/>
+        <div className="mt-3 font-black text-xl" style={{fontFamily:F.display,color:C.darkText}}>Couldn't load your synced data</div>
+        <p className="text-sm mt-2" style={{color:C.lightText,fontFamily:F.body}}>
+          The connection to your database failed just now. To protect your data, ZenkyBox refuses to show or save anything until this is confirmed working — this prevents an empty state from accidentally overwriting your real catalog.
+        </p>
+        <p className="text-xs mt-3" style={{color:C.lightText}}>This is usually temporary (a brief network hiccup). Try again in a moment.</p>
+        <button onClick={retryLoad} className="mt-4 inline-flex items-center gap-2 px-5 py-2.5 rounded-full text-sm font-bold" style={{backgroundColor:C.zenkyPurple,color:C.softWhite,fontFamily:F.display}}>
+          <RefreshCw size={15}/>Try Again
+        </button>
+      </div>
+    </div>
+  );
+
   const currentNavItem=NAV.find(n=>n.id===view);
   const blocked=currentNavItem?.adminOnly&&role!=="admin";
 
@@ -1483,7 +1929,7 @@ export default function App(){
               {view==="reports"&&<ReportsView reports={reports} skus={skus} combos={combos}/>}
               {view==="sales-reports"&&<SalesReportsView salesLines={salesLines} skus={skus} combos={combos}/>}
               {view==="costing"&&<CostingPricingView skus={skus}/>}
-              {view==="source-data"&&<SourceDataView activityLog={activityLog} synced={synced}/>}
+              {view==="source-data"&&<SourceDataView activityLog={activityLog} synced={synced} salesLines={salesLines} setSalesLines={setSalesLines} reports={reports} setReports={setReports} skus={skus} setSkus={setSkus} logActivity={logActivity} showToast={showToast}/>}
               {view==="access"&&<AccessManagementView role={role} adminPin={adminPin} setAdminPin={setAdminPin} showToast={showToast} logActivity={logActivity}/>}
             </>
           )}
