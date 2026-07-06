@@ -968,6 +968,7 @@ function BulkImportView({skus,combos,setSkus,setCombos,showToast,logActivity}){
 /* ═══ UPLOAD SALES ═══ */
 function UploadView({skus,combos,setSkus,reports,setReports,salesLines,setSalesLines,logActivity,showToast}){
   const [channel,setChannel]=useState("amazon"); // "amazon" | "website"
+  const [entryMode,setEntryMode]=useState("file"); // "file" | "manual"
   const [stage,setStage]=useState("idle");const [fileName,setFileName]=useState("");
   const [rawRows,setRawRows]=useState([]);const [extraCols,setExtraCols]=useState({});
   const [repairNote,setRepairNote]=useState(null);
@@ -1089,7 +1090,7 @@ function UploadView({skus,combos,setSkus,reports,setReports,salesLines,setSalesL
       <SectionHeader title="Upload Sales Report" subtitle="Amazon reports upload exactly as exported — combos auto-deduct component SKUs."/>
 
       {/* Channel selector */}
-      <div className="flex gap-2 mb-5">
+      <div className="flex gap-2 mb-3">
         {[{id:"amazon",label:"Amazon Seller Report"},{id:"website",label:"Website Sales"}].map(c=>(
           <button key={c.id} onClick={()=>{setChannel(c.id);reset();}} className="flex-1 sm:flex-none px-4 py-2.5 rounded-full text-sm font-bold transition-colors" style={{backgroundColor:channel===c.id?C.zenkyPurple:C.softWhite,color:channel===c.id?C.softWhite:C.darkText,border:`2px solid ${channel===c.id?C.zenkyPurple:C.border}`,fontFamily:F.display}}>
             {c.label}
@@ -1097,6 +1098,18 @@ function UploadView({skus,combos,setSkus,reports,setReports,salesLines,setSalesL
         ))}
       </div>
 
+      {/* Entry mode: bulk file upload vs logging one order at a time */}
+      <div className="flex gap-1.5 mb-5">
+        {[{id:"file",label:"Upload File"},{id:"manual",label:"Add Single Order"}].map(m=>(
+          <button key={m.id} onClick={()=>setEntryMode(m.id)} className="px-3.5 py-1.5 rounded-full text-xs font-bold transition-colors" style={{backgroundColor:entryMode===m.id?C.bgLight:"transparent",color:entryMode===m.id?C.zenkyPurple:C.lightText,border:`1.5px solid ${entryMode===m.id?C.zenkyPurple:C.border}`,fontFamily:F.body}}>
+            {m.label}
+          </button>
+        ))}
+      </div>
+
+      {entryMode==="manual"?(
+        <AddOrderForm channel={channel} skus={skus} combos={combos} setSkus={setSkus} reports={reports} setReports={setReports} salesLines={salesLines} setSalesLines={setSalesLines} logActivity={logActivity} showToast={showToast}/>
+      ):(
       <Card>
         {stage==="idle"&&(
           <div>
@@ -1151,7 +1164,90 @@ function UploadView({skus,combos,setSkus,reports,setReports,salesLines,setSalesL
           <div className="flex items-end gap-3 flex-wrap"><div className="w-full sm:w-64"><label className="text-xs font-bold block mb-1" style={{color:C.lightText}}>Report label</label><Input placeholder="e.g. Week of Jun 16–22" value={weekLabel} onChange={e=>setWeekLabel(e.target.value)}/></div><PrimaryButton onClick={applyReport}><Check size={15}/>Apply to inventory</PrimaryButton></div></div>)}
         {stage==="applied"&&(<div className="text-center py-8"><Check size={32} className="mx-auto mb-3" style={{color:C.mintGreen}}/><p className="font-bold text-lg" style={{color:C.darkText,fontFamily:F.display}}>Report applied</p><p className="text-sm mt-1" style={{color:C.lightText}}>View breakdown in Reports tab, or full analytics in ZenkyBox Sales Report.</p><div className="mt-5"><PrimaryButton onClick={reset}><Upload size={15}/>Upload another</PrimaryButton></div></div>)}
       </Card>
+      )}
     </div>
+  );
+}
+
+/* ═══ MANUAL SINGLE-ORDER ENTRY (for website orders without a bulk export) ═══ */
+function AddOrderForm({channel,skus,combos,setSkus,reports,setReports,salesLines,setSalesLines,logActivity,showToast}){
+  const blank={code:"",qty:1,price:"",orderId:"",buyerName:"",buyerEmail:"",city:"",state:"",date:new Date().toISOString().slice(0,10)};
+  const [form,setForm]=useState(blank);
+  const skuMap=useMemo(()=>Object.fromEntries(skus.map(s=>[s.sku,s])),[skus]);
+  const comboMap=useMemo(()=>Object.fromEntries(combos.map(c=>[c.sku,c])),[combos]);
+  const options=useMemo(()=>[
+    ...skus.map(s=>({code:s.sku,label:`${s.sku} — ${s.name}`,type:"SKU"})),
+    ...combos.map(c=>({code:c.sku,label:`${c.sku} — ${c.name}`,type:"Combo"})),
+  ],[skus,combos]);
+
+  function submitOrder(){
+    const code=form.code.trim();
+    const qty=Number(form.qty)||0;
+    if(!code){showToast("error","Choose a SKU or combo.");return;}
+    if(qty<=0){showToast("error","Quantity must be greater than 0.");return;}
+    const combo=comboMap[code],sku=skuMap[code];
+    if(!combo&&!sku){showToast("error",`"${code}" not found in Catalog or Combos.`);return;}
+    const matchType=combo?"combo":"direct";
+    const name=combo?.name||sku?.name||code;
+    const orderId=form.orderId.trim()||`WEB-${Date.now()}`;
+
+    // Deduct stock — same logic as bulk apply: combos reduce every component proportionally
+    const skuBefore={};skus.forEach(s=>skuBefore[s.sku]=s.stock);
+    const updated=Object.fromEntries(skus.map(s=>[s.sku,{...s}]));
+    if(matchType==="combo"){combo.components?.forEach(comp=>{if(updated[comp.sku])updated[comp.sku].stock=Math.max(0,updated[comp.sku].stock-comp.qty*qty);});}
+    else if(updated[code]){updated[code].stock=Math.max(0,updated[code].stock-qty);}
+    const newSkus=Object.values(updated);
+    const bMap=Object.fromEntries(skus.map(s=>[s.sku,s])),aMap=Object.fromEntries(newSkus.map(s=>[s.sku,s]));
+
+    const unitCost=unitCostOf(code,matchType,skuMap,comboMap);
+    const cost=unitCost*qty;
+    const price=form.price!==""?Number(form.price):null;
+    const revenue=price!=null&&!isNaN(price)?price*qty:0;
+    const dateIso=form.date?new Date(form.date).toISOString():new Date().toISOString();
+
+    const reportId=Date.now().toString();
+    const report={id:reportId,label:`Website Order — ${orderId}`,fileName:"(manual entry)",channel,appliedAt:new Date().toISOString(),
+      skuLines:newSkus.map(s=>({sku:s.sku,name:s.name,opening:skuBefore[s.sku]??s.stock,sold:(skuBefore[s.sku]??s.stock)-s.stock,closing:s.stock,reorderLevel:s.reorderLevel,status:stockStatus(s)})),
+      comboLines:combos.map(c=>({sku:c.sku,name:c.name,readyBefore:comboReadiness(c,bMap).ready,readyAfter:comboReadiness(c,aMap).ready,bottleneck:comboReadiness(c,aMap).bottleneck})),
+      unmatched:[],skippedDuplicates:0};
+
+    const newLine={id:`${reportId}-0`,reportId,channel,date:dateIso,sku:code,name,matchType,qty,unitCost,cost,revenue,earning:revenue-cost,orderId,buyer:form.buyerName.trim(),city:form.city.trim(),state:form.state.trim()};
+
+    setSkus(newSkus);setReports([report,...reports]);setSalesLines([...salesLines,newLine]);
+    logActivity?.("Order added manually",`[${channel}] ${orderId} — ${code} ×${qty}`);
+    showToast("success",`Order added — ${name} ×${qty}. 📝`);
+    setForm({...blank,date:form.date}); // keep the date for quick consecutive entries
+  }
+
+  return(
+    <Card>
+      <h3 className="font-bold text-lg mb-1" style={{fontFamily:F.display,color:C.darkText}}>Add a Single Order</h3>
+      <p className="text-xs mb-4" style={{color:C.lightText}}>For {channel==="website"?"website":"Amazon"} orders you don't have a bulk file for — logs the sale, deducts stock, and records it in Sales Report just like an uploaded file would.</p>
+      <div className="space-y-3">
+        <div>
+          <label className="text-xs font-bold uppercase block mb-1" style={{color:C.lightText}}>SKU or Combo</label>
+          <Select value={form.code} onChange={e=>setForm({...form,code:e.target.value})}>
+            <option value="">Select a SKU or combo…</option>
+            {options.map(o=><option key={o.code} value={o.code}>{o.type}: {o.label}</option>)}
+          </Select>
+        </div>
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+          <Input placeholder="Quantity" type="number" min="1" value={form.qty} onChange={e=>setForm({...form,qty:e.target.value})}/>
+          <div className="relative"><span className="absolute left-3 top-2.5 text-sm" style={{color:C.lightText}}>₹</span><Input placeholder="Sale price" type="number" className="pl-6" value={form.price} onChange={e=>setForm({...form,price:e.target.value})}/></div>
+          <Input type="date" value={form.date} onChange={e=>setForm({...form,date:e.target.value})}/>
+          <Input placeholder="Order ID (optional)" value={form.orderId} onChange={e=>setForm({...form,orderId:e.target.value})}/>
+        </div>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+          <Input placeholder="Buyer name (optional)" value={form.buyerName} onChange={e=>setForm({...form,buyerName:e.target.value})}/>
+          <Input placeholder="Buyer email (optional)" value={form.buyerEmail} onChange={e=>setForm({...form,buyerEmail:e.target.value})}/>
+        </div>
+        <div className="grid grid-cols-2 gap-2">
+          <Input placeholder="City (optional)" value={form.city} onChange={e=>setForm({...form,city:e.target.value})}/>
+          <Input placeholder="State (optional)" value={form.state} onChange={e=>setForm({...form,state:e.target.value})}/>
+        </div>
+      </div>
+      <div className="mt-4"><PrimaryButton onClick={submitOrder}><Plus size={16}/>Add Order</PrimaryButton></div>
+    </Card>
   );
 }
 
@@ -1337,18 +1433,28 @@ function CostingPricingView({skus}){
 /* ═══ ZENKYBOX SALES REPORT ═══ */
 function SalesReportsView({salesLines,skus,combos}){
   const [tab,setTab]=useState("overall");
+  const [channelFilter,setChannelFilter]=useState("all"); // "all" | "amazon" | "website"
   const skuMap=useMemo(()=>Object.fromEntries(skus.map(s=>[s.sku,s])),[skus]);
   const comboMap=useMemo(()=>Object.fromEntries(combos.map(c=>[c.sku,c])),[combos]);
 
+  // Apply the channel filter before anything else touches sales data — every
+  // tab below (including Overall/MoM/Weekly/Buyer/Location) automatically
+  // respects whichever channel is selected.
+  const filteredLines=useMemo(()=>{
+    if(channelFilter==="all")return salesLines;
+    return salesLines.filter(l=>(l.channel||"amazon")===channelFilter);
+  },[salesLines,channelFilter]);
+
   const TABS=[
     {id:"overall",label:"Overall"},
+    {id:"channel",label:"Channel-wise"},
     {id:"mom",label:"Month-over-Month"},
     {id:"weekly",label:"Weekly"},
     {id:"buyer",label:"Buyer-wise"},
     {id:"location",label:"Location-wise"},
   ];
 
-  const totals=useMemo(()=>salesLines.reduce((a,l)=>({qty:a.qty+l.qty,revenue:a.revenue+l.revenue,cost:a.cost+l.cost,earning:a.earning+l.earning}),{qty:0,revenue:0,cost:0,earning:0}),[salesLines]);
+  const totals=useMemo(()=>filteredLines.reduce((a,l)=>({qty:a.qty+l.qty,revenue:a.revenue+l.revenue,cost:a.cost+l.cost,earning:a.earning+l.earning}),{qty:0,revenue:0,cost:0,earning:0}),[filteredLines]);
 
   // Per-SKU / per-combo breakdown (used in Overall, MoM, Weekly — each just changes the grouping level)
   function skuComboBreakdown(lines){
@@ -1392,7 +1498,7 @@ function SalesReportsView({salesLines,skus,combos}){
   }
 
   function GroupedReport({groupFn,emptyMsg,chrono}){
-    const groups=useMemo(()=>aggregateSalesLines(salesLines,groupFn,skuMap,comboMap,chrono?"chrono":"revenue"),[salesLines,skuMap,comboMap,chrono]);
+    const groups=useMemo(()=>aggregateSalesLines(filteredLines,groupFn,skuMap,comboMap,chrono?"chrono":"revenue"),[filteredLines,skuMap,comboMap,chrono]);
     if(!groups.length)return<Empty icon={BarChart3} title="No sales data yet" message={emptyMsg}/>;
     return(
       <div>
@@ -1429,11 +1535,21 @@ function SalesReportsView({salesLines,skus,combos}){
     );
   }
 
-  const overallBreakdown=useMemo(()=>skuComboBreakdown(salesLines),[salesLines]);
+  const overallBreakdown=useMemo(()=>skuComboBreakdown(filteredLines),[filteredLines]);
 
   return(
     <div>
       <SectionHeader title="ZenkyBox Sales Report" subtitle="SKU & combo performance across every applied sales upload — cost, revenue, and earning."/>
+
+      {/* Channel filter — applies to every tab below */}
+      <div className="flex items-center gap-2 mb-4 flex-wrap">
+        <span className="text-xs font-bold uppercase" style={{color:C.lightText,letterSpacing:"0.03em"}}>Channel:</span>
+        {[{id:"all",label:"All Channels"},{id:"amazon",label:"Amazon"},{id:"website",label:"Website"}].map(c=>(
+          <button key={c.id} onClick={()=>setChannelFilter(c.id)} className="px-3 py-1.5 rounded-full text-xs font-bold transition-colors" style={{backgroundColor:channelFilter===c.id?C.zenkyPurple:C.softWhite,color:channelFilter===c.id?C.softWhite:C.darkText,border:`1.5px solid ${channelFilter===c.id?C.zenkyPurple:C.border}`,fontFamily:F.display}}>
+            {c.label}
+          </button>
+        ))}
+      </div>
 
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-6">
         {[{label:"Units Sold",value:fmt(totals.qty),color:C.zenkyPurple},
@@ -1444,10 +1560,10 @@ function SalesReportsView({salesLines,skus,combos}){
         ))}
       </div>
 
-      {salesLines.length===0&&(
+      {filteredLines.length===0&&(
         <div className="mb-5 p-3 rounded-xl text-xs flex items-start gap-2" style={{backgroundColor:C.bgLight,color:C.lightText}}>
           <AlertTriangle size={14} className="flex-shrink-0 mt-0.5"/>
-          <span>No sales data yet. Revenue/Earning/Buyer/Location figures populate once you upload sales files containing price, buyer, and location columns (see Upload Sales tab). Stock-only uploads still work but won't appear here.</span>
+          <span>No sales data{channelFilter!=="all"?` for ${channelFilter}`:""} yet. Revenue/Earning/Buyer/Location figures populate once you upload sales files containing price, buyer, and location columns (see Upload Sales tab). Stock-only uploads still work but won't appear here.</span>
         </div>
       )}
 
@@ -1461,7 +1577,7 @@ function SalesReportsView({salesLines,skus,combos}){
       </div>
 
       {tab==="overall"&&(
-        salesLines.length===0?null:(
+        filteredLines.length===0?null:(
           <Card>
             <div className="flex items-center justify-between mb-4 flex-wrap gap-2">
               <h3 className="font-bold text-lg" style={{fontFamily:F.display,color:C.darkText}}>All-Time Overall Report</h3>
@@ -1472,6 +1588,7 @@ function SalesReportsView({salesLines,skus,combos}){
           </Card>
         )
       )}
+      {tab==="channel"&&<GroupedReport groupFn={l=>l.channel==="website"?"Website":l.channel==="amazon"?"Amazon":"Unlabeled (older upload)"} emptyMsg="Upload sales from Amazon or Website to compare channels here."/>}
       {tab==="mom"&&<GroupedReport groupFn={l=>monthKey(l.date)} emptyMsg="Upload sales with a date column to see month-over-month trends." chrono/>}
       {tab==="weekly"&&<GroupedReport groupFn={l=>weekKey(l.date)} emptyMsg="Upload sales with a date column to see weekly trends." chrono/>}
       {tab==="buyer"&&<GroupedReport groupFn={l=>l.buyer||"Unknown buyer"} emptyMsg="Upload sales with a buyer name/email column to see buyer-wise data."/>}
@@ -1481,7 +1598,7 @@ function SalesReportsView({salesLines,skus,combos}){
 }
 
 /* ═══ SOURCE DATA (Admin only) ═══ */
-function SourceDataView({activityLog,synced,salesLines,setSalesLines,reports,setReports,skus,setSkus,logActivity,showToast}){
+function SourceDataView({activityLog,synced,salesLines,setSalesLines,reports,setReports,skus,setSkus,combos,adminPin,forceSaveNow,logActivity,showToast}){
   const dbUrl=process.env.NEXT_PUBLIC_SUPABASE_URL||"";
   const [scanResult,setScanResult]=useState(null); // {dupeGroups, extraQtyBySku, linesToRemove}
   const [confirmText,setConfirmText]=useState("");
@@ -1531,10 +1648,15 @@ function SourceDataView({activityLog,synced,salesLines,setSalesLines,reports,set
   function applyCleanup(){
     if(confirmText.trim().toUpperCase()!=="CLEAN"){showToast("error",'Type "CLEAN" exactly to confirm.');return;}
     const removeSet=new Set(scanResult.linesToRemove);
-    setSalesLines(salesLines.filter(l=>!removeSet.has(l.id)));
-    // Restore stock that was erroneously deducted by the duplicate applies
-    setSkus(skus.map(s=>scanResult.extraQtyBySku[s.sku]?{...s,stock:s.stock+scanResult.extraQtyBySku[s.sku]}:s));
+    const newSalesLines=salesLines.filter(l=>!removeSet.has(l.id));
+    const newSkus=skus.map(s=>scanResult.extraQtyBySku[s.sku]?{...s,stock:s.stock+scanResult.extraQtyBySku[s.sku]}:s);
+    const newActivityLog=[{id:Date.now().toString()+Math.random(),date:new Date().toISOString(),action:"Cleaned duplicate sales data",detail:`Removed ${scanResult.totalDuplicateLines} duplicate order lines, restored stock for ${Object.keys(scanResult.extraQtyBySku).length} SKUs`,role:"admin"},...activityLog].slice(0,300);
+    setSalesLines(newSalesLines);
+    setSkus(newSkus);
     logActivity?.("Cleaned duplicate sales data",`Removed ${scanResult.totalDuplicateLines} duplicate order lines, restored stock for ${Object.keys(scanResult.extraQtyBySku).length} SKUs`);
+    // Write the corrected state to Supabase immediately — don't wait for the
+    // normal debounce, which leaves a window for a stale tab to resave old data.
+    forceSaveNow?.({skus:newSkus,combos,reports,salesLines:newSalesLines,activityLog:newActivityLog,adminPin});
     showToast("success",`Removed ${scanResult.totalDuplicateLines} duplicate entries and restored stock. ✨`);
     setScanResult(null);setShowConfirm(false);setConfirmText("");
   }
@@ -1545,13 +1667,20 @@ function SourceDataView({activityLog,synced,salesLines,setSalesLines,reports,set
   function flushAllSalesData(){
     if(flushConfirmText.trim().toUpperCase()!=="FLUSH"){showToast("error",'Type "FLUSH" exactly to confirm.');return;}
     const lineCount=salesLines.length,reportCount=reports.length;
+    const newSkus=skus.map(s=>({...s,stock:s.initialStock??s.stock}));
+    const newActivityLog=[{id:Date.now().toString()+Math.random(),date:new Date().toISOString(),action:"Flushed all sales data",detail:`Cleared ${lineCount} sale lines and ${reportCount} reports; reset stock to initial baseline for all SKUs`,role:"admin"},...activityLog].slice(0,300);
     setSalesLines([]);
     setReports([]);
     // Reset every SKU's stock back to its recorded baseline, undoing every sales
     // deduction ever applied — the clean-slate option when duplicate/corrupted
     // uploads have made the current numbers untrustworthy.
-    setSkus(skus.map(s=>({...s,stock:s.initialStock??s.stock})));
+    setSkus(newSkus);
     logActivity?.("Flushed all sales data",`Cleared ${lineCount} sale lines and ${reportCount} reports; reset stock to initial baseline for all SKUs`);
+    // Write immediately — this is the fix for "flush didn't stick": waiting for
+    // the normal 500ms debounce left a window where a stale open tab elsewhere
+    // could resave its old (pre-flush) state and overwrite this. Forcing the
+    // write right now, with the exact new values, closes that window.
+    forceSaveNow?.({skus:newSkus,combos,reports:[],salesLines:[],activityLog:newActivityLog,adminPin});
     showToast("success","All sales data flushed and stock reset to baseline. 🗑️");
     setShowFlushConfirm(false);setFlushConfirmText("");
   }
@@ -1834,6 +1963,17 @@ export default function App(){
     return()=>clearTimeout(saveTimeout.current);
   },[skus,combos,reports,salesLines,activityLog,adminPin,loaded,canSave]);
 
+  // For destructive/corrective actions (Flush, Cleanup, Clear All, Replace All) —
+  // caller supplies the COMPLETE new payload explicitly (not read from state,
+  // since state setters called moments earlier haven't re-rendered yet) and this
+  // writes it to Supabase immediately, skipping the 500ms debounce entirely.
+  // This closes the race window where a stale tab could resave old data before
+  // a flush/cleanup's result reaches the database.
+  function forceSaveNow(payload){
+    clearTimeout(saveTimeout.current);
+    saveData(payload).then(timestamp=>{if(timestamp)lastKnownUpdatedAt.current=timestamp;}).catch(()=>{});
+  }
+
   function retryLoad(){
     setLoadError(false);setLoaded(false);
     (async()=>{
@@ -1929,7 +2069,7 @@ export default function App(){
               {view==="reports"&&<ReportsView reports={reports} skus={skus} combos={combos}/>}
               {view==="sales-reports"&&<SalesReportsView salesLines={salesLines} skus={skus} combos={combos}/>}
               {view==="costing"&&<CostingPricingView skus={skus}/>}
-              {view==="source-data"&&<SourceDataView activityLog={activityLog} synced={synced} salesLines={salesLines} setSalesLines={setSalesLines} reports={reports} setReports={setReports} skus={skus} setSkus={setSkus} logActivity={logActivity} showToast={showToast}/>}
+              {view==="source-data"&&<SourceDataView activityLog={activityLog} synced={synced} salesLines={salesLines} setSalesLines={setSalesLines} reports={reports} setReports={setReports} skus={skus} setSkus={setSkus} combos={combos} adminPin={adminPin} forceSaveNow={forceSaveNow} logActivity={logActivity} showToast={showToast}/>}
               {view==="access"&&<AccessManagementView role={role} adminPin={adminPin} setAdminPin={setAdminPin} showToast={showToast} logActivity={logActivity}/>}
             </>
           )}
