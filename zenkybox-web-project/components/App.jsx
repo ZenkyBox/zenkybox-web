@@ -1481,8 +1481,12 @@ function SalesReportsView({salesLines,skus,combos}){
 }
 
 /* ═══ SOURCE DATA (Admin only) ═══ */
-function SourceDataView({activityLog,synced}){
+function SourceDataView({activityLog,synced,salesLines,setSalesLines,skus,setSkus,logActivity,showToast}){
   const dbUrl=process.env.NEXT_PUBLIC_SUPABASE_URL||"";
+  const [scanResult,setScanResult]=useState(null); // {dupeGroups, extraQtyBySku, linesToRemove}
+  const [confirmText,setConfirmText]=useState("");
+  const [showConfirm,setShowConfirm]=useState(false);
+
   function exportLog(){
     let csv="Date,Action,Detail,Role\n";
     activityLog.forEach(a=>csv+=`${a.date},"${a.action}","${a.detail||""}",${a.role}\n`);
@@ -1498,6 +1502,42 @@ function SourceDataView({activityLog,synced}){
     });
     return Object.entries(groups); // insertion order = newest first since log is prepended
   },[activityLog]);
+
+  // Scan for sales lines that share the same order-id + sku — these are almost
+  // certainly the same real-world sale counted more than once (e.g. the same
+  // orders exported through two different Amazon report types and both uploaded).
+  function scanForDuplicates(){
+    const groups={};
+    salesLines.forEach(line=>{
+      if(!line.orderId)return; // can't dedupe without an order id — leave these alone
+      const key=`${line.orderId}::${line.sku}`;
+      if(!groups[key])groups[key]=[];
+      groups[key].push(line);
+    });
+    const dupeGroups=Object.values(groups).filter(g=>g.length>1);
+    const extraQtyBySku={};
+    let linesToRemove=[];
+    dupeGroups.forEach(group=>{
+      const [keep,...extras]=group; // keep the first occurrence, remove the rest
+      extras.forEach(l=>{
+        extraQtyBySku[l.sku]=(extraQtyBySku[l.sku]||0)+l.qty;
+        linesToRemove.push(l.id);
+      });
+    });
+    setScanResult({dupeGroups,extraQtyBySku,linesToRemove,totalDuplicateLines:linesToRemove.length});
+    setShowConfirm(false);setConfirmText("");
+  }
+
+  function applyCleanup(){
+    if(confirmText.trim().toUpperCase()!=="CLEAN"){showToast("error",'Type "CLEAN" exactly to confirm.');return;}
+    const removeSet=new Set(scanResult.linesToRemove);
+    setSalesLines(salesLines.filter(l=>!removeSet.has(l.id)));
+    // Restore stock that was erroneously deducted by the duplicate applies
+    setSkus(skus.map(s=>scanResult.extraQtyBySku[s.sku]?{...s,stock:s.stock+scanResult.extraQtyBySku[s.sku]}:s));
+    logActivity?.("Cleaned duplicate sales data",`Removed ${scanResult.totalDuplicateLines} duplicate order lines, restored stock for ${Object.keys(scanResult.extraQtyBySku).length} SKUs`);
+    showToast("success",`Removed ${scanResult.totalDuplicateLines} duplicate entries and restored stock. ✨`);
+    setScanResult(null);setShowConfirm(false);setConfirmText("");
+  }
 
   return(
     <div>
@@ -1516,6 +1556,54 @@ function SourceDataView({activityLog,synced}){
         ):(
           <div className="text-sm p-3 rounded-xl" style={{backgroundColor:"#FFF3E6",color:"#9a5b0f"}}>
             No database connected — data is stored in this browser's local storage only (not synced across devices). See SUPABASE_SETUP.md to connect a free cross-device database.
+          </div>
+        )}
+      </Card>
+
+      <Card className="mb-6">
+        <div className="flex items-center gap-2 mb-3">
+          <RefreshCw size={18} style={{color:C.zenkyPurple}}/>
+          <h3 className="font-bold text-lg" style={{fontFamily:F.display,color:C.darkText}}>Clean Duplicate Sales Data</h3>
+        </div>
+        <p className="text-sm mb-4" style={{color:C.lightText,fontFamily:F.body}}>
+          Scans every recorded sale for repeated order-id + SKU combinations — the signature of the same real sale being uploaded more than once (e.g. via two different Amazon report types covering the same dates). Removes the extras and restores any stock that was wrongly deducted twice.
+        </p>
+        {!scanResult&&<PrimaryButton onClick={scanForDuplicates}><Search size={15}/>Scan for Duplicates</PrimaryButton>}
+
+        {scanResult&&scanResult.totalDuplicateLines===0&&(
+          <div className="flex items-center gap-2 p-3 rounded-xl text-sm" style={{backgroundColor:"#F0FDE8",color:"#166534"}}>
+            <Check size={16}/>No duplicates found — your sales data looks clean.
+          </div>
+        )}
+
+        {scanResult&&scanResult.totalDuplicateLines>0&&(
+          <div>
+            <div className="p-3.5 rounded-xl mb-4" style={{backgroundColor:"#fff5f5",border:"2px solid #fecaca"}}>
+              <p className="font-bold text-sm mb-2" style={{color:"#991b1b",fontFamily:F.display}}>
+                Found {scanResult.totalDuplicateLines} duplicate order line{scanResult.totalDuplicateLines!==1?"s":""} across {scanResult.dupeGroups.length} order{scanResult.dupeGroups.length!==1?"s":""}
+              </p>
+              <p className="text-xs mb-3" style={{color:"#991b1b"}}>Stock will be restored for these SKUs (the amount that was over-deducted):</p>
+              <div className="space-y-1 mb-3">
+                {Object.entries(scanResult.extraQtyBySku).map(([sku,qty])=>(
+                  <div key={sku} className="text-xs flex justify-between" style={{fontFamily:F.mono,color:"#991b1b"}}>
+                    <span>{sku}</span><span className="font-bold">+{qty} units</span>
+                  </div>
+                ))}
+              </div>
+              <p className="text-xs" style={{color:"#991b1b"}}>Note: this fixes current stock and Sales Report totals. Past entries in the Reports tab are historical snapshots and won't be rewritten.</p>
+            </div>
+            {!showConfirm?(
+              <div className="flex gap-2">
+                <PrimaryButton onClick={()=>setShowConfirm(true)} tone="pink"><Check size={15}/>Remove Duplicates & Restore Stock</PrimaryButton>
+                <button onClick={()=>setScanResult(null)} className="text-sm font-bold" style={{color:C.lightText}}>Cancel</button>
+              </div>
+            ):(
+              <div className="flex items-center gap-2 flex-wrap">
+                <Input placeholder='Type "CLEAN" to confirm' value={confirmText} onChange={e=>setConfirmText(e.target.value)} className="max-w-xs" style={{borderColor:"#fecaca"}}/>
+                <button onClick={applyCleanup} className="px-4 py-2.5 rounded-xl text-sm font-bold text-white" style={{backgroundColor:"#dc2626",fontFamily:F.display}}>Confirm Cleanup</button>
+                <button onClick={()=>{setShowConfirm(false);setConfirmText("");}} className="text-sm font-bold" style={{color:C.lightText,fontFamily:F.body}}>Cancel</button>
+              </div>
+            )}
           </div>
         )}
       </Card>
@@ -1794,7 +1882,7 @@ export default function App(){
               {view==="reports"&&<ReportsView reports={reports} skus={skus} combos={combos}/>}
               {view==="sales-reports"&&<SalesReportsView salesLines={salesLines} skus={skus} combos={combos}/>}
               {view==="costing"&&<CostingPricingView skus={skus}/>}
-              {view==="source-data"&&<SourceDataView activityLog={activityLog} synced={synced}/>}
+              {view==="source-data"&&<SourceDataView activityLog={activityLog} synced={synced} salesLines={salesLines} setSalesLines={setSalesLines} skus={skus} setSkus={setSkus} logActivity={logActivity} showToast={showToast}/>}
               {view==="access"&&<AccessManagementView role={role} adminPin={adminPin} setAdminPin={setAdminPin} showToast={showToast} logActivity={logActivity}/>}
             </>
           )}
