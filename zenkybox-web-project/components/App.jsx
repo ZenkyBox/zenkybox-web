@@ -1954,7 +1954,23 @@ function AccessManagementView({role,adminPin,setAdminPin,loginCreds,setLoginCred
 }
 
 /* ═══ FINANCIALS ═══ */
-function FinancialsView({investors,setInvestors,investments,setInvestments,expenses,setExpenses,income,setIncome,salesLines,logActivity,showToast}){
+function FinancialsView({investors,setInvestors,investments,setInvestments,expenses,setExpenses,income,setIncome,salesLines,skus,combos,reports,activityLog,adminPin,loginCreds,forceSaveNow,logActivity,showToast}){
+  const [showResetConfirm,setShowResetConfirm]=useState(false);
+  const [resetConfirmText,setResetConfirmText]=useState("");
+
+  function resetAllFinancials(){
+    if(resetConfirmText.trim().toUpperCase()!=="RESET"){showToast("error",'Type "RESET" exactly to confirm.');return;}
+    const counts={investors:investors.length,investments:investments.length,expenses:expenses.length,income:income.length};
+    const newActivityLog=[{id:Date.now().toString()+Math.random(),date:new Date().toISOString(),action:"Reset all financial data",detail:`Cleared ${counts.investors} investors, ${counts.investments} investments, ${counts.expenses} expenses, ${counts.income} income entries`,role:"admin"},...activityLog].slice(0,300);
+    setInvestors([]);setInvestments([]);setExpenses([]);setIncome([]);
+    logActivity?.("Reset all financial data",`Cleared ${counts.investors} investors, ${counts.investments} investments, ${counts.expenses} expenses, ${counts.income} income entries`);
+    // Write immediately rather than waiting on the debounce — same fix as the
+    // Sales Data flush, closing the window where a stale tab could resave old data.
+    forceSaveNow?.({skus,combos,reports,salesLines,activityLog:newActivityLog,adminPin,loginCreds,investors:[],investments:[],expenses:[],income:[]});
+    showToast("success","All financial data reset. 🗑️");
+    setShowResetConfirm(false);setResetConfirmText("");
+  }
+
   const [tab,setTab]=useState("overview");
   const TABS=[
     {id:"overview",label:"Overview"},
@@ -2008,6 +2024,30 @@ function FinancialsView({investors,setInvestors,investments,setInvestments,expen
                 </tr>
               ))}</tbody>
             </table></div>
+          )}
+        </Card>
+
+        <Card className="mt-6" style={{borderColor:"#fecaca"}}>
+          <div className="flex items-center gap-2 mb-3">
+            <Trash2 size={18} style={{color:"#dc2626"}}/>
+            <h3 className="font-bold text-lg" style={{fontFamily:F.display,color:"#991b1b"}}>Reset All Financial Data</h3>
+          </div>
+          <p className="text-sm mb-4" style={{color:C.darkText,fontFamily:F.body}}>
+            Clears every investor, investment, expense, and income entry — a clean slate for the Financials module only. Your SKU Catalog, Combos, and Sales Report are completely untouched.
+          </p>
+          {!showResetConfirm?(
+            <button onClick={()=>setShowResetConfirm(true)} className="inline-flex items-center gap-2 px-4 py-2.5 rounded-full text-sm font-bold text-white" style={{backgroundColor:"#dc2626",fontFamily:F.display}}>
+              <Trash2 size={15}/>Reset Financial Data
+            </button>
+          ):(
+            <div className="p-3.5 rounded-xl" style={{backgroundColor:"#fff5f5",border:"2px solid #fecaca"}}>
+              <p className="font-bold text-sm mb-2" style={{color:"#991b1b",fontFamily:F.display}}>This cannot be undone. Type "RESET" to confirm.</p>
+              <div className="flex items-center gap-2 flex-wrap">
+                <Input placeholder='Type "RESET" to confirm' value={resetConfirmText} onChange={e=>setResetConfirmText(e.target.value)} className="max-w-xs" style={{borderColor:"#fecaca"}}/>
+                <button onClick={resetAllFinancials} className="px-4 py-2.5 rounded-xl text-sm font-bold text-white" style={{backgroundColor:"#dc2626",fontFamily:F.display}}>Confirm Reset</button>
+                <button onClick={()=>{setShowResetConfirm(false);setResetConfirmText("");}} className="text-sm font-bold" style={{color:C.lightText,fontFamily:F.body}}>Cancel</button>
+              </div>
+            </div>
           )}
         </Card>
       </div>
@@ -2637,7 +2677,7 @@ export default function App(){
               {view==="reports"&&<ReportsView reports={reports} skus={skus} combos={combos}/>}
               {view==="sales-reports"&&<SalesReportsView salesLines={salesLines} skus={skus} combos={combos}/>}
               {view==="costing"&&<CostingPricingView skus={skus}/>}
-              {view==="financials"&&<FinancialsView investors={investors} setInvestors={setInvestors} investments={investments} setInvestments={setInvestments} expenses={expenses} setExpenses={setExpenses} income={income} setIncome={setIncome} salesLines={salesLines} logActivity={logActivity} showToast={showToast}/>}
+              {view==="financials"&&<FinancialsView investors={investors} setInvestors={setInvestors} investments={investments} setInvestments={setInvestments} expenses={expenses} setExpenses={setExpenses} income={income} setIncome={setIncome} salesLines={salesLines} skus={skus} combos={combos} reports={reports} activityLog={activityLog} adminPin={adminPin} loginCreds={loginCreds} forceSaveNow={forceSaveNow} logActivity={logActivity} showToast={showToast}/>}
               {view==="source-data"&&<SourceDataView activityLog={activityLog} synced={synced} salesLines={salesLines} setSalesLines={setSalesLines} reports={reports} setReports={setReports} skus={skus} setSkus={setSkus} combos={combos} adminPin={adminPin} loginCreds={loginCreds} investors={investors} investments={investments} expenses={expenses} income={income} forceSaveNow={forceSaveNow} logActivity={logActivity} showToast={showToast}/>}
               {view==="access"&&<AccessManagementView role={role} adminPin={adminPin} setAdminPin={setAdminPin} loginCreds={loginCreds} setLoginCreds={setLoginCreds} showToast={showToast} logActivity={logActivity}/>}
             </>
