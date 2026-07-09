@@ -38,6 +38,7 @@ const EXPENSE_HEADS = [
   "Other Expenses",
 ];
 const INCOME_HEADS = ["Income from Amazon","Income from Website","Other Income"];
+const PAYMENT_MODES = ["Bank Transfer","UPI","Cash","Card"];
 
 const NAV = [
   { id:"dashboard",       label:"Dashboard",         icon:LayoutDashboard, adminOnly:false },
@@ -2057,7 +2058,7 @@ function FinancialsView({investors,setInvestors,investments,setInvestments,expen
   /* ── Investors ── */
   function Investors(){
     const [invForm,setInvForm]=useState({name:"",contact:"",notes:""});
-    const [txForm,setTxForm]=useState({investorId:"",amount:"",date:new Date().toISOString().slice(0,10),comment:""});
+    const [txForm,setTxForm]=useState({investorId:"",amount:"",date:new Date().toISOString().slice(0,10),paymentMode:"",comment:""});
     const [editInvId,setEditInvId]=useState(null);
     const [editInvValues,setEditInvValues]=useState({});
     const [deleteInvId,setDeleteInvId]=useState(null);
@@ -2083,7 +2084,12 @@ function FinancialsView({investors,setInvestors,investments,setInvestments,expen
     }
     function removeInvestor(id){
       const linked=investments.filter(t=>t.investorId===id);
-      if(linked.length>0){showToast("error",`Can't delete — ${linked.length} investment record${linked.length!==1?"s are":" is"} logged against this investor. Delete those first.`);setDeleteInvId(null);return;}
+      const linkedFromExpense=linked.filter(t=>t.fromExpenseId).length;
+      if(linked.length>0){
+        const note=linkedFromExpense>0?` (${linkedFromExpense} came from expenses they covered — remove those in the Expenses tab instead)`:"";
+        showToast("error",`Can't delete — ${linked.length} investment record${linked.length!==1?"s are":" is"} logged against this investor${note}.`);
+        setDeleteInvId(null);return;
+      }
       const inv=investors.find(i=>i.id===id);
       setInvestors(investors.filter(i=>i.id!==id));
       logActivity?.("Investor deleted",inv?.name||id);
@@ -2096,16 +2102,16 @@ function FinancialsView({investors,setInvestors,investments,setInvestments,expen
       const amount=Number(txForm.amount);
       if(!investor){showToast("error","Choose an investor.");return;}
       if(!amount||amount<=0){showToast("error","Enter a valid amount.");return;}
-      const tx={id:Date.now().toString(),investorId:investor.id,investorName:investor.name,amount,date:txForm.date,comment:txForm.comment.trim()};
+      const tx={id:Date.now().toString(),investorId:investor.id,investorName:investor.name,amount,date:txForm.date,paymentMode:txForm.paymentMode,comment:txForm.comment.trim()};
       setInvestments([...investments,tx]);
       logActivity?.("Investment logged",`${investor.name} — ${fmtINR(amount)}`);
       showToast("success",`Logged ${fmtINR(amount)} from ${investor.name}. ✨`);
-      setTxForm({investorId:"",amount:"",date:txForm.date,comment:""});
+      setTxForm({investorId:"",amount:"",date:txForm.date,paymentMode:"",comment:""});
     }
     function saveTxEdit(id){
       const amount=Number(editTxValues.amount);
       if(!amount||amount<=0){showToast("error","Enter a valid amount.");return;}
-      setInvestments(investments.map(t=>t.id===id?{...t,amount,date:editTxValues.date,comment:editTxValues.comment}:t));
+      setInvestments(investments.map(t=>t.id===id?{...t,amount,date:editTxValues.date,paymentMode:editTxValues.paymentMode,comment:editTxValues.comment}:t));
       logActivity?.("Investment edited",id);
       showToast("success","Saved. ✨");
       setEditTxId(null);
@@ -2163,13 +2169,19 @@ function FinancialsView({investors,setInvestors,investments,setInvestments,expen
           <h3 className="font-bold text-lg mb-4" style={{fontFamily:F.display,color:C.darkText}}>Log an Investment</h3>
           {investors.length===0?<p className="text-sm" style={{color:C.lightText}}>Add an investor above first.</p>:(
             <>
-              <div className="grid sm:grid-cols-4 gap-2 mb-3">
+              <div className="grid sm:grid-cols-3 gap-2 mb-2">
                 <Select value={txForm.investorId} onChange={e=>setTxForm({...txForm,investorId:e.target.value})}>
                   <option value="">Select investor…</option>
                   {investors.map(i=><option key={i.id} value={i.id}>{i.name}</option>)}
                 </Select>
                 <div className="relative"><span className="absolute left-3 top-2.5 text-sm" style={{color:C.lightText}}>₹</span><Input placeholder="Amount" type="number" className="pl-6" value={txForm.amount} onChange={e=>setTxForm({...txForm,amount:e.target.value})}/></div>
                 <Input type="date" value={txForm.date} onChange={e=>setTxForm({...txForm,date:e.target.value})}/>
+              </div>
+              <div className="grid sm:grid-cols-2 gap-2 mb-3">
+                <Select value={txForm.paymentMode} onChange={e=>setTxForm({...txForm,paymentMode:e.target.value})}>
+                  <option value="">Payment mode…</option>
+                  {PAYMENT_MODES.map(m=><option key={m} value={m}>{m}</option>)}
+                </Select>
                 <Input placeholder="Comment (optional)" value={txForm.comment} onChange={e=>setTxForm({...txForm,comment:e.target.value})}/>
               </div>
               <PrimaryButton onClick={addInvestment}><Plus size={16}/>Log Investment</PrimaryButton>
@@ -2177,21 +2189,34 @@ function FinancialsView({investors,setInvestors,investments,setInvestments,expen
           )}
           {investments.length>0&&(
             <div className="mt-5 overflow-x-auto"><table className="w-full text-sm">
-              <thead><tr style={{color:C.lightText}}><th className="py-2 pr-3 text-left font-bold text-xs uppercase">Date</th><th className="py-2 pr-3 text-left font-bold text-xs uppercase">Investor</th><th className="py-2 pr-3 text-left font-bold text-xs uppercase">Amount</th><th className="py-2 pr-3 text-left font-bold text-xs uppercase">Comment</th><th/></tr></thead>
+              <thead><tr style={{color:C.lightText}}><th className="py-2 pr-3 text-left font-bold text-xs uppercase">Date</th><th className="py-2 pr-3 text-left font-bold text-xs uppercase">Investor</th><th className="py-2 pr-3 text-left font-bold text-xs uppercase">Amount</th><th className="py-2 pr-3 text-left font-bold text-xs uppercase">Mode</th><th className="py-2 pr-3 text-left font-bold text-xs uppercase">Comment</th><th/></tr></thead>
               <tbody>{[...investments].sort((a,b)=>new Date(b.date)-new Date(a.date)).map(t=>{
                 const isEdit=editTxId===t.id;
+                const isLinked=!!t.fromExpenseId;
                 return(
                   <tr key={t.id} className="border-t" style={{borderColor:C.border}}>
                     <td className="py-2 pr-3" style={{fontFamily:F.mono,color:C.lightText}}>{isEdit?<Input type="date" value={editTxValues.date} onChange={e=>setEditTxValues({...editTxValues,date:e.target.value})}/>:t.date}</td>
                     <td className="py-2 pr-3 font-bold">{t.investorName}</td>
                     <td className="py-2 pr-3 font-bold" style={{fontFamily:F.mono,color:C.zenkyPurple}}>{isEdit?<Input type="number" value={editTxValues.amount} onChange={e=>setEditTxValues({...editTxValues,amount:e.target.value})}/>:fmtINR(t.amount)}</td>
-                    <td className="py-2 pr-3" style={{color:C.lightText}}>{isEdit?<Input value={editTxValues.comment} onChange={e=>setEditTxValues({...editTxValues,comment:e.target.value})}/>:(t.comment||"—")}</td>
+                    <td className="py-2 pr-3">{isEdit?<Select value={editTxValues.paymentMode} onChange={e=>setEditTxValues({...editTxValues,paymentMode:e.target.value})}><option value="">—</option>{PAYMENT_MODES.map(m=><option key={m} value={m}>{m}</option>)}</Select>:(t.paymentMode?<Stamp tone="blue">{t.paymentMode}</Stamp>:"—")}</td>
+                    <td className="py-2 pr-3" style={{color:C.lightText}}>
+                      {isEdit?<Input value={editTxValues.comment} onChange={e=>setEditTxValues({...editTxValues,comment:e.target.value})}/>:(
+                        <div className="flex items-center gap-1.5">
+                          {t.comment||"—"}
+                          {isLinked&&<Stamp tone="orange">🔗 auto</Stamp>}
+                        </div>
+                      )}
+                    </td>
                     <td className="py-2 pr-3">
-                      <div className="flex items-center gap-1 justify-end">
-                        {isEdit?(<><GhostButton title="Save" onClick={()=>saveTxEdit(t.id)}><Check size={13}/></GhostButton><GhostButton title="Cancel" onClick={()=>setEditTxId(null)}><X size={13}/></GhostButton></>)
-                        :deleteTxId===t.id?(<><GhostButton title="Confirm" onClick={()=>removeTx(t.id)}><Check size={13}/></GhostButton><GhostButton title="Cancel" onClick={()=>setDeleteTxId(null)}><X size={13}/></GhostButton></>)
-                        :(<><GhostButton title="Edit" onClick={()=>{setEditTxId(t.id);setEditTxValues({date:t.date,amount:t.amount,comment:t.comment});}}><Pencil size={13}/></GhostButton><GhostButton title="Delete" onClick={()=>setDeleteTxId(t.id)}><Trash2 size={13}/></GhostButton></>)}
-                      </div>
+                      {isLinked?(
+                        <span className="text-xs" style={{color:C.lightText}}>Edit via Expenses</span>
+                      ):(
+                        <div className="flex items-center gap-1 justify-end">
+                          {isEdit?(<><GhostButton title="Save" onClick={()=>saveTxEdit(t.id)}><Check size={13}/></GhostButton><GhostButton title="Cancel" onClick={()=>setEditTxId(null)}><X size={13}/></GhostButton></>)
+                          :deleteTxId===t.id?(<><GhostButton title="Confirm" onClick={()=>removeTx(t.id)}><Check size={13}/></GhostButton><GhostButton title="Cancel" onClick={()=>setDeleteTxId(null)}><X size={13}/></GhostButton></>)
+                          :(<><GhostButton title="Edit" onClick={()=>{setEditTxId(t.id);setEditTxValues({date:t.date,amount:t.amount,paymentMode:t.paymentMode||"",comment:t.comment});}}><Pencil size={13}/></GhostButton><GhostButton title="Delete" onClick={()=>setDeleteTxId(t.id)}><Trash2 size={13}/></GhostButton></>)}
+                        </div>
+                      )}
                     </td>
                   </tr>
                 );
@@ -2205,7 +2230,7 @@ function FinancialsView({investors,setInvestors,investments,setInvestments,expen
 
   /* ── Expenses ── */
   function Expenses(){
-    const [form,setForm]=useState({date:new Date().toISOString().slice(0,10),head:"",amount:"",comment:""});
+    const [form,setForm]=useState({date:new Date().toISOString().slice(0,10),head:"",amount:"",spentBy:"",paidTo:"",paymentMode:"",comment:""});
     const [editId,setEditId]=useState(null);
     const [editValues,setEditValues]=useState({});
     const [deleteId,setDeleteId]=useState(null);
@@ -2213,23 +2238,42 @@ function FinancialsView({investors,setInvestors,investments,setInvestments,expen
       const amount=Number(form.amount);
       if(!form.head){showToast("error","Choose an expense head.");return;}
       if(!amount||amount<=0){showToast("error","Enter a valid amount.");return;}
-      const e={id:Date.now().toString(),date:form.date,head:form.head,amount,comment:form.comment.trim()};
+      const spentByInvestor=investors.find(i=>i.id===form.spentBy);
+      const e={id:Date.now().toString(),date:form.date,head:form.head,amount,spentBy:form.spentBy,spentByName:spentByInvestor?.name||"",paidTo:form.paidTo.trim(),paymentMode:form.paymentMode,comment:form.comment.trim()};
       setExpenses([...expenses,e]);
-      logActivity?.("Expense added",`${form.head} — ${fmtINR(amount)}`);
-      showToast("success",`Added expense — ${fmtINR(amount)}. ✨`);
-      setForm({date:form.date,head:"",amount:"",comment:""});
+      // If this expense was personally covered by an investor, treat it as
+      // capital they've put into the business — auto-log a linked investment
+      // so their Total Invested reflects it too. Net effect on Fund Balance
+      // is zero (the expense debit is offset by the investment credit), which
+      // is correct: no company-pool cash moved, the investor paid the vendor directly.
+      if(spentByInvestor){
+        const linkedInv={id:`auto-${e.id}`,investorId:spentByInvestor.id,investorName:spentByInvestor.name,amount,date:form.date,paymentMode:form.paymentMode,comment:`Covered expense: ${form.head}`,fromExpenseId:e.id};
+        setInvestments([...investments,linkedInv]);
+      }
+      logActivity?.("Expense added",`${form.head} — ${fmtINR(amount)}${spentByInvestor?` (covered by ${spentByInvestor.name} — added to their investment total)`:""}`);
+      showToast("success",spentByInvestor?`Added expense — ${fmtINR(amount)}, credited to ${spentByInvestor.name}'s investment. ✨`:`Added expense — ${fmtINR(amount)}. ✨`);
+      setForm({date:form.date,head:"",amount:"",spentBy:"",paidTo:"",paymentMode:"",comment:""});
     }
     function saveEdit(id){
       const amount=Number(editValues.amount);
       if(!editValues.head){showToast("error","Choose an expense head.");return;}
       if(!amount||amount<=0){showToast("error","Enter a valid amount.");return;}
-      setExpenses(expenses.map(e=>e.id===id?{...e,date:editValues.date,head:editValues.head,amount,comment:editValues.comment}:e));
+      const spentByInvestor=investors.find(i=>i.id===editValues.spentBy);
+      setExpenses(expenses.map(e=>e.id===id?{...e,date:editValues.date,head:editValues.head,amount,spentBy:editValues.spentBy,spentByName:spentByInvestor?.name||"",paidTo:editValues.paidTo,paymentMode:editValues.paymentMode,comment:editValues.comment}:e));
+      // Reconcile the linked investment: drop any previous auto-entry for this
+      // expense, then re-add one if a "spent by" investor is still set.
+      const withoutOld=investments.filter(t=>t.fromExpenseId!==id);
+      const newInvestments=spentByInvestor
+        ?[...withoutOld,{id:`auto-${id}`,investorId:spentByInvestor.id,investorName:spentByInvestor.name,amount,date:editValues.date,paymentMode:editValues.paymentMode,comment:`Covered expense: ${editValues.head}`,fromExpenseId:id}]
+        :withoutOld;
+      setInvestments(newInvestments);
       logActivity?.("Expense edited",`${editValues.head} — ${fmtINR(amount)}`);
       showToast("success","Saved. ✨");
       setEditId(null);
     }
     function removeExpense(id){
       setExpenses(expenses.filter(e=>e.id!==id));
+      setInvestments(investments.filter(t=>t.fromExpenseId!==id)); // remove any linked auto-investment too
       logActivity?.("Expense deleted",id);
       showToast("success","Expense removed.");
       setDeleteId(null);
@@ -2238,25 +2282,39 @@ function FinancialsView({investors,setInvestors,investments,setInvestments,expen
       <div>
         <Card className="mb-6">
           <h3 className="font-bold text-lg mb-4" style={{fontFamily:F.display,color:C.darkText}}>Add an Expense</h3>
-          <div className="grid sm:grid-cols-4 gap-2 mb-3">
+          <div className="grid sm:grid-cols-3 gap-2 mb-2">
             <Input type="date" value={form.date} onChange={e=>setForm({...form,date:e.target.value})}/>
             <Select value={form.head} onChange={e=>setForm({...form,head:e.target.value})}>
               <option value="">Select head…</option>
               {EXPENSE_HEADS.map(h=><option key={h} value={h}>{h}</option>)}
             </Select>
             <div className="relative"><span className="absolute left-3 top-2.5 text-sm" style={{color:C.lightText}}>₹</span><Input placeholder="Amount" type="number" className="pl-6" value={form.amount} onChange={e=>setForm({...form,amount:e.target.value})}/></div>
+          </div>
+          <div className="grid sm:grid-cols-3 gap-2 mb-2">
+            <Select value={form.spentBy} onChange={e=>setForm({...form,spentBy:e.target.value})}>
+              <option value="">Spent by (accountability)…</option>
+              {investors.map(i=><option key={i.id} value={i.id}>{i.name}</option>)}
+            </Select>
+            <Input placeholder="Paid to (name)" value={form.paidTo} onChange={e=>setForm({...form,paidTo:e.target.value})}/>
+            <Select value={form.paymentMode} onChange={e=>setForm({...form,paymentMode:e.target.value})}>
+              <option value="">Payment mode…</option>
+              {PAYMENT_MODES.map(m=><option key={m} value={m}>{m}</option>)}
+            </Select>
+          </div>
+          <div className="mb-3">
             <Input placeholder="Comment (optional)" value={form.comment} onChange={e=>setForm({...form,comment:e.target.value})}/>
           </div>
+          {investors.length===0&&<p className="text-xs mb-3" style={{color:C.lightText}}>Tip: add people to Investor Master first so you can pick who's accountable for each expense.</p>}
           <PrimaryButton onClick={add}><Plus size={16}/>Add Expense</PrimaryButton>
         </Card>
         <Card>
           <div className="flex items-center justify-between mb-4">
             <h3 className="font-bold text-lg" style={{fontFamily:F.display,color:C.darkText}}>{expenses.length} Expense{expenses.length!==1?"s":""}</h3>
-            {expenses.length>0&&<button onClick={()=>exportCsv(expenses,["date","head","amount","comment"],"expenses.csv")} className="inline-flex items-center gap-1 text-xs font-bold" style={{color:C.zenkyOrange}}><Download size={13}/>Export</button>}
+            {expenses.length>0&&<button onClick={()=>exportCsv(expenses,["date","head","amount","spentByName","paidTo","paymentMode","comment"],"expenses.csv")} className="inline-flex items-center gap-1 text-xs font-bold" style={{color:C.zenkyOrange}}><Download size={13}/>Export</button>}
           </div>
           {expenses.length===0?<Empty icon={IndianRupee} title="No expenses logged" message="Add your first expense above."/>:(
             <div className="overflow-x-auto"><table className="w-full text-sm">
-              <thead><tr style={{color:C.lightText}}><th className="py-2 pr-3 text-left font-bold text-xs uppercase">Date</th><th className="py-2 pr-3 text-left font-bold text-xs uppercase">Head</th><th className="py-2 pr-3 text-left font-bold text-xs uppercase">Amount</th><th className="py-2 pr-3 text-left font-bold text-xs uppercase">Comment</th><th/></tr></thead>
+              <thead><tr style={{color:C.lightText}}><th className="py-2 pr-3 text-left font-bold text-xs uppercase">Date</th><th className="py-2 pr-3 text-left font-bold text-xs uppercase">Head</th><th className="py-2 pr-3 text-left font-bold text-xs uppercase">Amount</th><th className="py-2 pr-3 text-left font-bold text-xs uppercase">Spent By</th><th className="py-2 pr-3 text-left font-bold text-xs uppercase">Paid To</th><th className="py-2 pr-3 text-left font-bold text-xs uppercase">Mode</th><th className="py-2 pr-3 text-left font-bold text-xs uppercase">Comment</th><th/></tr></thead>
               <tbody>{[...expenses].sort((a,b)=>new Date(b.date)-new Date(a.date)).map(e=>{
                 const isEdit=editId===e.id;
                 return(
@@ -2264,12 +2322,15 @@ function FinancialsView({investors,setInvestors,investments,setInvestments,expen
                     <td className="py-2 pr-3" style={{fontFamily:F.mono,color:C.lightText}}>{isEdit?<Input type="date" value={editValues.date} onChange={ev=>setEditValues({...editValues,date:ev.target.value})}/>:e.date}</td>
                     <td className="py-2 pr-3">{isEdit?<Select value={editValues.head} onChange={ev=>setEditValues({...editValues,head:ev.target.value})}>{EXPENSE_HEADS.map(h=><option key={h} value={h}>{h}</option>)}</Select>:<Stamp tone="orange">{e.head}</Stamp>}</td>
                     <td className="py-2 pr-3 font-bold" style={{fontFamily:F.mono,color:C.zenkyOrange}}>{isEdit?<Input type="number" value={editValues.amount} onChange={ev=>setEditValues({...editValues,amount:ev.target.value})}/>:fmtINR(e.amount)}</td>
+                    <td className="py-2 pr-3">{isEdit?<Select value={editValues.spentBy} onChange={ev=>setEditValues({...editValues,spentBy:ev.target.value})}><option value="">—</option>{investors.map(i=><option key={i.id} value={i.id}>{i.name}</option>)}</Select>:(e.spentByName?<Stamp tone="purple">{e.spentByName}</Stamp>:"—")}</td>
+                    <td className="py-2 pr-3">{isEdit?<Input value={editValues.paidTo} onChange={ev=>setEditValues({...editValues,paidTo:ev.target.value})}/>:(e.paidTo||"—")}</td>
+                    <td className="py-2 pr-3">{isEdit?<Select value={editValues.paymentMode} onChange={ev=>setEditValues({...editValues,paymentMode:ev.target.value})}><option value="">—</option>{PAYMENT_MODES.map(m=><option key={m} value={m}>{m}</option>)}</Select>:(e.paymentMode?<Stamp tone="blue">{e.paymentMode}</Stamp>:"—")}</td>
                     <td className="py-2 pr-3" style={{color:C.lightText}}>{isEdit?<Input value={editValues.comment} onChange={ev=>setEditValues({...editValues,comment:ev.target.value})}/>:(e.comment||"—")}</td>
                     <td className="py-2 pr-3">
                       <div className="flex items-center gap-1 justify-end">
                         {isEdit?(<><GhostButton title="Save" onClick={()=>saveEdit(e.id)}><Check size={13}/></GhostButton><GhostButton title="Cancel" onClick={()=>setEditId(null)}><X size={13}/></GhostButton></>)
                         :deleteId===e.id?(<><GhostButton title="Confirm" onClick={()=>removeExpense(e.id)}><Check size={13}/></GhostButton><GhostButton title="Cancel" onClick={()=>setDeleteId(null)}><X size={13}/></GhostButton></>)
-                        :(<><GhostButton title="Edit" onClick={()=>{setEditId(e.id);setEditValues({date:e.date,head:e.head,amount:e.amount,comment:e.comment});}}><Pencil size={13}/></GhostButton><GhostButton title="Delete" onClick={()=>setDeleteId(e.id)}><Trash2 size={13}/></GhostButton></>)}
+                        :(<><GhostButton title="Edit" onClick={()=>{setEditId(e.id);setEditValues({date:e.date,head:e.head,amount:e.amount,spentBy:e.spentBy||"",paidTo:e.paidTo||"",paymentMode:e.paymentMode||"",comment:e.comment});}}><Pencil size={13}/></GhostButton><GhostButton title="Delete" onClick={()=>setDeleteId(e.id)}><Trash2 size={13}/></GhostButton></>)}
                       </div>
                     </td>
                   </tr>
@@ -2284,7 +2345,7 @@ function FinancialsView({investors,setInvestors,investments,setInvestments,expen
 
   /* ── Income ── */
   function Income(){
-    const [form,setForm]=useState({date:new Date().toISOString().slice(0,10),head:"",amount:"",comment:""});
+    const [form,setForm]=useState({date:new Date().toISOString().slice(0,10),head:"",amount:"",receivedFrom:"",paymentMode:"",comment:""});
     const [editId,setEditId]=useState(null);
     const [editValues,setEditValues]=useState({});
     const [deleteId,setDeleteId]=useState(null);
@@ -2294,17 +2355,17 @@ function FinancialsView({investors,setInvestors,investments,setInvestments,expen
       const amount=Number(form.amount);
       if(!form.head){showToast("error","Choose an income head.");return;}
       if(!amount||amount<=0){showToast("error","Enter a valid amount.");return;}
-      const i={id:Date.now().toString(),date:form.date,head:form.head,amount,comment:form.comment.trim()};
+      const i={id:Date.now().toString(),date:form.date,head:form.head,amount,receivedFrom:form.receivedFrom.trim(),paymentMode:form.paymentMode,comment:form.comment.trim()};
       setIncome([...income,i]);
       logActivity?.("Income added",`${form.head} — ${fmtINR(amount)}`);
       showToast("success",`Added income — ${fmtINR(amount)}. ✨`);
-      setForm({date:form.date,head:"",amount:"",comment:""});
+      setForm({date:form.date,head:"",amount:"",receivedFrom:"",paymentMode:"",comment:""});
     }
     function saveEdit(id){
       const amount=Number(editValues.amount);
       if(!editValues.head){showToast("error","Choose an income head.");return;}
       if(!amount||amount<=0){showToast("error","Enter a valid amount.");return;}
-      setIncome(income.map(i=>i.id===id?{...i,date:editValues.date,head:editValues.head,amount,comment:editValues.comment}:i));
+      setIncome(income.map(i=>i.id===id?{...i,date:editValues.date,head:editValues.head,amount,receivedFrom:editValues.receivedFrom,paymentMode:editValues.paymentMode,comment:editValues.comment}:i));
       logActivity?.("Income edited",`${editValues.head} — ${fmtINR(amount)}`);
       showToast("success","Saved. ✨");
       setEditId(null);
@@ -2324,13 +2385,20 @@ function FinancialsView({investors,setInvestors,investments,setInvestments,expen
         )}
         <Card className="mb-6">
           <h3 className="font-bold text-lg mb-4" style={{fontFamily:F.display,color:C.darkText}}>Add Income</h3>
-          <div className="grid sm:grid-cols-4 gap-2 mb-3">
+          <div className="grid sm:grid-cols-3 gap-2 mb-2">
             <Input type="date" value={form.date} onChange={e=>setForm({...form,date:e.target.value})}/>
             <Select value={form.head} onChange={e=>setForm({...form,head:e.target.value})}>
               <option value="">Select head…</option>
               {INCOME_HEADS.map(h=><option key={h} value={h}>{h}</option>)}
             </Select>
             <div className="relative"><span className="absolute left-3 top-2.5 text-sm" style={{color:C.lightText}}>₹</span><Input placeholder="Amount" type="number" className="pl-6" value={form.amount} onChange={e=>setForm({...form,amount:e.target.value})}/></div>
+          </div>
+          <div className="grid sm:grid-cols-3 gap-2 mb-3">
+            <Input placeholder="Received from (name)" value={form.receivedFrom} onChange={e=>setForm({...form,receivedFrom:e.target.value})}/>
+            <Select value={form.paymentMode} onChange={e=>setForm({...form,paymentMode:e.target.value})}>
+              <option value="">Payment mode…</option>
+              {PAYMENT_MODES.map(m=><option key={m} value={m}>{m}</option>)}
+            </Select>
             <Input placeholder="Comment (optional)" value={form.comment} onChange={e=>setForm({...form,comment:e.target.value})}/>
           </div>
           <PrimaryButton onClick={add}><Plus size={16}/>Add Income</PrimaryButton>
@@ -2338,11 +2406,11 @@ function FinancialsView({investors,setInvestors,investments,setInvestments,expen
         <Card>
           <div className="flex items-center justify-between mb-4">
             <h3 className="font-bold text-lg" style={{fontFamily:F.display,color:C.darkText}}>{income.length} Income Entr{income.length!==1?"ies":"y"}</h3>
-            {income.length>0&&<button onClick={()=>exportCsv(income,["date","head","amount","comment"],"income.csv")} className="inline-flex items-center gap-1 text-xs font-bold" style={{color:C.zenkyOrange}}><Download size={13}/>Export</button>}
+            {income.length>0&&<button onClick={()=>exportCsv(income,["date","head","amount","receivedFrom","paymentMode","comment"],"income.csv")} className="inline-flex items-center gap-1 text-xs font-bold" style={{color:C.zenkyOrange}}><Download size={13}/>Export</button>}
           </div>
           {income.length===0?<Empty icon={IndianRupee} title="No income logged" message="Add your first income entry above."/>:(
             <div className="overflow-x-auto"><table className="w-full text-sm">
-              <thead><tr style={{color:C.lightText}}><th className="py-2 pr-3 text-left font-bold text-xs uppercase">Date</th><th className="py-2 pr-3 text-left font-bold text-xs uppercase">Head</th><th className="py-2 pr-3 text-left font-bold text-xs uppercase">Amount</th><th className="py-2 pr-3 text-left font-bold text-xs uppercase">Comment</th><th/></tr></thead>
+              <thead><tr style={{color:C.lightText}}><th className="py-2 pr-3 text-left font-bold text-xs uppercase">Date</th><th className="py-2 pr-3 text-left font-bold text-xs uppercase">Head</th><th className="py-2 pr-3 text-left font-bold text-xs uppercase">Amount</th><th className="py-2 pr-3 text-left font-bold text-xs uppercase">Received From</th><th className="py-2 pr-3 text-left font-bold text-xs uppercase">Mode</th><th className="py-2 pr-3 text-left font-bold text-xs uppercase">Comment</th><th/></tr></thead>
               <tbody>{[...income].sort((a,b)=>new Date(b.date)-new Date(a.date)).map(i=>{
                 const isEdit=editId===i.id;
                 return(
@@ -2350,12 +2418,14 @@ function FinancialsView({investors,setInvestors,investments,setInvestments,expen
                     <td className="py-2 pr-3" style={{fontFamily:F.mono,color:C.lightText}}>{isEdit?<Input type="date" value={editValues.date} onChange={e=>setEditValues({...editValues,date:e.target.value})}/>:i.date}</td>
                     <td className="py-2 pr-3">{isEdit?<Select value={editValues.head} onChange={e=>setEditValues({...editValues,head:e.target.value})}>{INCOME_HEADS.map(h=><option key={h} value={h}>{h}</option>)}</Select>:<Stamp tone="mint">{i.head}</Stamp>}</td>
                     <td className="py-2 pr-3 font-bold" style={{fontFamily:F.mono,color:C.mintGreen}}>{isEdit?<Input type="number" value={editValues.amount} onChange={e=>setEditValues({...editValues,amount:e.target.value})}/>:fmtINR(i.amount)}</td>
+                    <td className="py-2 pr-3">{isEdit?<Input value={editValues.receivedFrom} onChange={e=>setEditValues({...editValues,receivedFrom:e.target.value})}/>:(i.receivedFrom||"—")}</td>
+                    <td className="py-2 pr-3">{isEdit?<Select value={editValues.paymentMode} onChange={e=>setEditValues({...editValues,paymentMode:e.target.value})}><option value="">—</option>{PAYMENT_MODES.map(m=><option key={m} value={m}>{m}</option>)}</Select>:(i.paymentMode?<Stamp tone="blue">{i.paymentMode}</Stamp>:"—")}</td>
                     <td className="py-2 pr-3" style={{color:C.lightText}}>{isEdit?<Input value={editValues.comment} onChange={e=>setEditValues({...editValues,comment:e.target.value})}/>:(i.comment||"—")}</td>
                     <td className="py-2 pr-3">
                       <div className="flex items-center gap-1 justify-end">
                         {isEdit?(<><GhostButton title="Save" onClick={()=>saveEdit(i.id)}><Check size={13}/></GhostButton><GhostButton title="Cancel" onClick={()=>setEditId(null)}><X size={13}/></GhostButton></>)
                         :deleteId===i.id?(<><GhostButton title="Confirm" onClick={()=>removeIncome(i.id)}><Check size={13}/></GhostButton><GhostButton title="Cancel" onClick={()=>setDeleteId(null)}><X size={13}/></GhostButton></>)
-                        :(<><GhostButton title="Edit" onClick={()=>{setEditId(i.id);setEditValues({date:i.date,head:i.head,amount:i.amount,comment:i.comment});}}><Pencil size={13}/></GhostButton><GhostButton title="Delete" onClick={()=>setDeleteId(i.id)}><Trash2 size={13}/></GhostButton></>)}
+                        :(<><GhostButton title="Edit" onClick={()=>{setEditId(i.id);setEditValues({date:i.date,head:i.head,amount:i.amount,receivedFrom:i.receivedFrom||"",paymentMode:i.paymentMode||"",comment:i.comment});}}><Pencil size={13}/></GhostButton><GhostButton title="Delete" onClick={()=>setDeleteId(i.id)}><Trash2 size={13}/></GhostButton></>)}
                       </div>
                     </td>
                   </tr>
@@ -2385,6 +2455,16 @@ function FinancialsView({investors,setInvestors,investments,setInvestments,expen
       return Object.values(groups).sort((a,b)=>new Date(a.key+" 1")-new Date(b.key+" 1"));
     },[]);
 
+    const byPerson=useMemo(()=>{
+      const totals={};
+      expenses.forEach(e=>{
+        const key=e.spentByName||"Unattributed";
+        if(!totals[key])totals[key]={name:key,count:0,amount:0};
+        totals[key].count++;totals[key].amount+=Number(e.amount||0);
+      });
+      return Object.values(totals).sort((a,b)=>b.amount-a.amount);
+    },[]);
+
     function exportMonthly(){
       let csv="Month,Total Income,Total Expense,Net\n";
       monthly.forEach(m=>csv+=`${m.key},${m.income.toFixed(2)},${m.expense.toFixed(2)},${(m.income-m.expense).toFixed(2)}\n`);
@@ -2397,6 +2477,23 @@ function FinancialsView({investors,setInvestors,investments,setInvestments,expen
 
     return(
       <div>
+        {byPerson.length>0&&(
+          <Card className="mb-6">
+            <h3 className="font-bold text-lg mb-4" style={{fontFamily:F.display,color:C.darkText}}>Accountability — Expenses by Person</h3>
+            <div className="space-y-2">
+              {byPerson.map(p=>(
+                <div key={p.name} className="flex items-center justify-between p-3 rounded-xl" style={{backgroundColor:C.bgLight}}>
+                  <div className="flex items-center gap-2">
+                    <Stamp tone={p.name==="Unattributed"?"pink":"purple"}>{p.name}</Stamp>
+                    <span className="text-xs" style={{color:C.lightText}}>{p.count} expense{p.count!==1?"s":""}</span>
+                  </div>
+                  <span className="font-bold" style={{fontFamily:F.mono,color:C.zenkyOrange}}>{fmtINR(p.amount)}</span>
+                </div>
+              ))}
+            </div>
+            {byPerson.some(p=>p.name==="Unattributed")&&<p className="text-xs mt-3" style={{color:C.lightText}}>"Unattributed" expenses don't have a "Spent By" person recorded — edit them in the Expenses tab to assign one.</p>}
+          </Card>
+        )}
         <div className="flex justify-end mb-4"><button onClick={exportMonthly} className="inline-flex items-center gap-1 text-xs font-bold" style={{color:C.zenkyOrange}}><Download size={13}/>Export Monthly Report</button></div>
         <div className="space-y-4">
           {monthly.map(m=>(
