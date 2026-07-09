@@ -2018,6 +2018,12 @@ function FinancialsView({investors,setInvestors,investments,setInvestments,expen
   function Investors(){
     const [invForm,setInvForm]=useState({name:"",contact:"",notes:""});
     const [txForm,setTxForm]=useState({investorId:"",amount:"",date:new Date().toISOString().slice(0,10),comment:""});
+    const [editInvId,setEditInvId]=useState(null);
+    const [editInvValues,setEditInvValues]=useState({});
+    const [deleteInvId,setDeleteInvId]=useState(null);
+    const [editTxId,setEditTxId]=useState(null);
+    const [editTxValues,setEditTxValues]=useState({});
+    const [deleteTxId,setDeleteTxId]=useState(null);
 
     function addInvestor(){
       if(!invForm.name.trim()){showToast("error","Investor name required.");return;}
@@ -2027,6 +2033,24 @@ function FinancialsView({investors,setInvestors,investments,setInvestments,expen
       showToast("success",`Added investor ${inv.name}. ✨`);
       setInvForm({name:"",contact:"",notes:""});
     }
+    function saveInvestorEdit(id){
+      setInvestors(investors.map(i=>i.id===id?{...i,name:editInvValues.name,contact:editInvValues.contact,notes:editInvValues.notes}:i));
+      // Keep investment records' cached investorName in sync with a rename
+      setInvestments(investments.map(t=>t.investorId===id?{...t,investorName:editInvValues.name}:t));
+      logActivity?.("Investor edited",editInvValues.name);
+      showToast("success","Saved. ✨");
+      setEditInvId(null);
+    }
+    function removeInvestor(id){
+      const linked=investments.filter(t=>t.investorId===id);
+      if(linked.length>0){showToast("error",`Can't delete — ${linked.length} investment record${linked.length!==1?"s are":" is"} logged against this investor. Delete those first.`);setDeleteInvId(null);return;}
+      const inv=investors.find(i=>i.id===id);
+      setInvestors(investors.filter(i=>i.id!==id));
+      logActivity?.("Investor deleted",inv?.name||id);
+      showToast("success","Investor removed.");
+      setDeleteInvId(null);
+    }
+
     function addInvestment(){
       const investor=investors.find(i=>i.id===txForm.investorId);
       const amount=Number(txForm.amount);
@@ -2038,11 +2062,26 @@ function FinancialsView({investors,setInvestors,investments,setInvestments,expen
       showToast("success",`Logged ${fmtINR(amount)} from ${investor.name}. ✨`);
       setTxForm({investorId:"",amount:"",date:txForm.date,comment:""});
     }
+    function saveTxEdit(id){
+      const amount=Number(editTxValues.amount);
+      if(!amount||amount<=0){showToast("error","Enter a valid amount.");return;}
+      setInvestments(investments.map(t=>t.id===id?{...t,amount,date:editTxValues.date,comment:editTxValues.comment}:t));
+      logActivity?.("Investment edited",id);
+      showToast("success","Saved. ✨");
+      setEditTxId(null);
+    }
+    function removeTx(id){
+      setInvestments(investments.filter(t=>t.id!==id));
+      logActivity?.("Investment deleted",id);
+      showToast("success","Investment removed.");
+      setDeleteTxId(null);
+    }
+
     const perInvestor=useMemo(()=>{
       const totals={};
       investments.forEach(t=>{totals[t.investorId]=(totals[t.investorId]||0)+Number(t.amount||0);});
       return totals;
-    },[]);
+    },[investments]);
 
     return(
       <div>
@@ -2057,15 +2096,25 @@ function FinancialsView({investors,setInvestors,investments,setInvestments,expen
 
           {investors.length>0&&(
             <div className="mt-5 overflow-x-auto"><table className="w-full text-sm">
-              <thead><tr style={{color:C.lightText}}><th className="py-2 pr-3 text-left font-bold text-xs uppercase">Name</th><th className="py-2 pr-3 text-left font-bold text-xs uppercase">Contact</th><th className="py-2 pr-3 text-left font-bold text-xs uppercase">Notes</th><th className="py-2 pr-3 text-left font-bold text-xs uppercase">Total Invested</th></tr></thead>
-              <tbody>{investors.map(inv=>(
-                <tr key={inv.id} className="border-t" style={{borderColor:C.border}}>
-                  <td className="py-2 pr-3 font-bold">{inv.name}</td>
-                  <td className="py-2 pr-3" style={{color:C.lightText}}>{inv.contact||"—"}</td>
-                  <td className="py-2 pr-3" style={{color:C.lightText}}>{inv.notes||"—"}</td>
-                  <td className="py-2 pr-3 font-bold" style={{fontFamily:F.mono,color:C.zenkyPurple}}>{fmtINR(perInvestor[inv.id]||0)}</td>
-                </tr>
-              ))}</tbody>
+              <thead><tr style={{color:C.lightText}}><th className="py-2 pr-3 text-left font-bold text-xs uppercase">Name</th><th className="py-2 pr-3 text-left font-bold text-xs uppercase">Contact</th><th className="py-2 pr-3 text-left font-bold text-xs uppercase">Notes</th><th className="py-2 pr-3 text-left font-bold text-xs uppercase">Total Invested</th><th/></tr></thead>
+              <tbody>{investors.map(inv=>{
+                const isEdit=editInvId===inv.id;
+                return(
+                  <tr key={inv.id} className="border-t" style={{borderColor:C.border}}>
+                    <td className="py-2 pr-3 font-bold">{isEdit?<Input value={editInvValues.name} onChange={e=>setEditInvValues({...editInvValues,name:e.target.value})}/>:inv.name}</td>
+                    <td className="py-2 pr-3" style={{color:C.lightText}}>{isEdit?<Input value={editInvValues.contact} onChange={e=>setEditInvValues({...editInvValues,contact:e.target.value})}/>:(inv.contact||"—")}</td>
+                    <td className="py-2 pr-3" style={{color:C.lightText}}>{isEdit?<Input value={editInvValues.notes} onChange={e=>setEditInvValues({...editInvValues,notes:e.target.value})}/>:(inv.notes||"—")}</td>
+                    <td className="py-2 pr-3 font-bold" style={{fontFamily:F.mono,color:C.zenkyPurple}}>{fmtINR(perInvestor[inv.id]||0)}</td>
+                    <td className="py-2 pr-3">
+                      <div className="flex items-center gap-1 justify-end">
+                        {isEdit?(<><GhostButton title="Save" onClick={()=>saveInvestorEdit(inv.id)}><Check size={13}/></GhostButton><GhostButton title="Cancel" onClick={()=>setEditInvId(null)}><X size={13}/></GhostButton></>)
+                        :deleteInvId===inv.id?(<><GhostButton title="Confirm" onClick={()=>removeInvestor(inv.id)}><Check size={13}/></GhostButton><GhostButton title="Cancel" onClick={()=>setDeleteInvId(null)}><X size={13}/></GhostButton></>)
+                        :(<><GhostButton title="Edit" onClick={()=>{setEditInvId(inv.id);setEditInvValues({name:inv.name,contact:inv.contact,notes:inv.notes});}}><Pencil size={13}/></GhostButton><GhostButton title="Delete" onClick={()=>setDeleteInvId(inv.id)}><Trash2 size={13}/></GhostButton></>)}
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })}</tbody>
             </table></div>
           )}
         </Card>
@@ -2088,15 +2137,25 @@ function FinancialsView({investors,setInvestors,investments,setInvestments,expen
           )}
           {investments.length>0&&(
             <div className="mt-5 overflow-x-auto"><table className="w-full text-sm">
-              <thead><tr style={{color:C.lightText}}><th className="py-2 pr-3 text-left font-bold text-xs uppercase">Date</th><th className="py-2 pr-3 text-left font-bold text-xs uppercase">Investor</th><th className="py-2 pr-3 text-left font-bold text-xs uppercase">Amount</th><th className="py-2 pr-3 text-left font-bold text-xs uppercase">Comment</th></tr></thead>
-              <tbody>{[...investments].sort((a,b)=>new Date(b.date)-new Date(a.date)).map(t=>(
-                <tr key={t.id} className="border-t" style={{borderColor:C.border}}>
-                  <td className="py-2 pr-3" style={{fontFamily:F.mono,color:C.lightText}}>{t.date}</td>
-                  <td className="py-2 pr-3 font-bold">{t.investorName}</td>
-                  <td className="py-2 pr-3 font-bold" style={{fontFamily:F.mono,color:C.zenkyPurple}}>{fmtINR(t.amount)}</td>
-                  <td className="py-2 pr-3" style={{color:C.lightText}}>{t.comment||"—"}</td>
-                </tr>
-              ))}</tbody>
+              <thead><tr style={{color:C.lightText}}><th className="py-2 pr-3 text-left font-bold text-xs uppercase">Date</th><th className="py-2 pr-3 text-left font-bold text-xs uppercase">Investor</th><th className="py-2 pr-3 text-left font-bold text-xs uppercase">Amount</th><th className="py-2 pr-3 text-left font-bold text-xs uppercase">Comment</th><th/></tr></thead>
+              <tbody>{[...investments].sort((a,b)=>new Date(b.date)-new Date(a.date)).map(t=>{
+                const isEdit=editTxId===t.id;
+                return(
+                  <tr key={t.id} className="border-t" style={{borderColor:C.border}}>
+                    <td className="py-2 pr-3" style={{fontFamily:F.mono,color:C.lightText}}>{isEdit?<Input type="date" value={editTxValues.date} onChange={e=>setEditTxValues({...editTxValues,date:e.target.value})}/>:t.date}</td>
+                    <td className="py-2 pr-3 font-bold">{t.investorName}</td>
+                    <td className="py-2 pr-3 font-bold" style={{fontFamily:F.mono,color:C.zenkyPurple}}>{isEdit?<Input type="number" value={editTxValues.amount} onChange={e=>setEditTxValues({...editTxValues,amount:e.target.value})}/>:fmtINR(t.amount)}</td>
+                    <td className="py-2 pr-3" style={{color:C.lightText}}>{isEdit?<Input value={editTxValues.comment} onChange={e=>setEditTxValues({...editTxValues,comment:e.target.value})}/>:(t.comment||"—")}</td>
+                    <td className="py-2 pr-3">
+                      <div className="flex items-center gap-1 justify-end">
+                        {isEdit?(<><GhostButton title="Save" onClick={()=>saveTxEdit(t.id)}><Check size={13}/></GhostButton><GhostButton title="Cancel" onClick={()=>setEditTxId(null)}><X size={13}/></GhostButton></>)
+                        :deleteTxId===t.id?(<><GhostButton title="Confirm" onClick={()=>removeTx(t.id)}><Check size={13}/></GhostButton><GhostButton title="Cancel" onClick={()=>setDeleteTxId(null)}><X size={13}/></GhostButton></>)
+                        :(<><GhostButton title="Edit" onClick={()=>{setEditTxId(t.id);setEditTxValues({date:t.date,amount:t.amount,comment:t.comment});}}><Pencil size={13}/></GhostButton><GhostButton title="Delete" onClick={()=>setDeleteTxId(t.id)}><Trash2 size={13}/></GhostButton></>)}
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })}</tbody>
             </table></div>
           )}
         </Card>
@@ -2107,6 +2166,9 @@ function FinancialsView({investors,setInvestors,investments,setInvestments,expen
   /* ── Expenses ── */
   function Expenses(){
     const [form,setForm]=useState({date:new Date().toISOString().slice(0,10),head:"",amount:"",comment:""});
+    const [editId,setEditId]=useState(null);
+    const [editValues,setEditValues]=useState({});
+    const [deleteId,setDeleteId]=useState(null);
     function add(){
       const amount=Number(form.amount);
       if(!form.head){showToast("error","Choose an expense head.");return;}
@@ -2116,6 +2178,21 @@ function FinancialsView({investors,setInvestors,investments,setInvestments,expen
       logActivity?.("Expense added",`${form.head} — ${fmtINR(amount)}`);
       showToast("success",`Added expense — ${fmtINR(amount)}. ✨`);
       setForm({date:form.date,head:"",amount:"",comment:""});
+    }
+    function saveEdit(id){
+      const amount=Number(editValues.amount);
+      if(!editValues.head){showToast("error","Choose an expense head.");return;}
+      if(!amount||amount<=0){showToast("error","Enter a valid amount.");return;}
+      setExpenses(expenses.map(e=>e.id===id?{...e,date:editValues.date,head:editValues.head,amount,comment:editValues.comment}:e));
+      logActivity?.("Expense edited",`${editValues.head} — ${fmtINR(amount)}`);
+      showToast("success","Saved. ✨");
+      setEditId(null);
+    }
+    function removeExpense(id){
+      setExpenses(expenses.filter(e=>e.id!==id));
+      logActivity?.("Expense deleted",id);
+      showToast("success","Expense removed.");
+      setDeleteId(null);
     }
     return(
       <div>
@@ -2139,15 +2216,25 @@ function FinancialsView({investors,setInvestors,investments,setInvestments,expen
           </div>
           {expenses.length===0?<Empty icon={IndianRupee} title="No expenses logged" message="Add your first expense above."/>:(
             <div className="overflow-x-auto"><table className="w-full text-sm">
-              <thead><tr style={{color:C.lightText}}><th className="py-2 pr-3 text-left font-bold text-xs uppercase">Date</th><th className="py-2 pr-3 text-left font-bold text-xs uppercase">Head</th><th className="py-2 pr-3 text-left font-bold text-xs uppercase">Amount</th><th className="py-2 pr-3 text-left font-bold text-xs uppercase">Comment</th></tr></thead>
-              <tbody>{[...expenses].sort((a,b)=>new Date(b.date)-new Date(a.date)).map(e=>(
-                <tr key={e.id} className="border-t" style={{borderColor:C.border}}>
-                  <td className="py-2 pr-3" style={{fontFamily:F.mono,color:C.lightText}}>{e.date}</td>
-                  <td className="py-2 pr-3"><Stamp tone="orange">{e.head}</Stamp></td>
-                  <td className="py-2 pr-3 font-bold" style={{fontFamily:F.mono,color:C.zenkyOrange}}>{fmtINR(e.amount)}</td>
-                  <td className="py-2 pr-3" style={{color:C.lightText}}>{e.comment||"—"}</td>
-                </tr>
-              ))}</tbody>
+              <thead><tr style={{color:C.lightText}}><th className="py-2 pr-3 text-left font-bold text-xs uppercase">Date</th><th className="py-2 pr-3 text-left font-bold text-xs uppercase">Head</th><th className="py-2 pr-3 text-left font-bold text-xs uppercase">Amount</th><th className="py-2 pr-3 text-left font-bold text-xs uppercase">Comment</th><th/></tr></thead>
+              <tbody>{[...expenses].sort((a,b)=>new Date(b.date)-new Date(a.date)).map(e=>{
+                const isEdit=editId===e.id;
+                return(
+                  <tr key={e.id} className="border-t" style={{borderColor:C.border}}>
+                    <td className="py-2 pr-3" style={{fontFamily:F.mono,color:C.lightText}}>{isEdit?<Input type="date" value={editValues.date} onChange={ev=>setEditValues({...editValues,date:ev.target.value})}/>:e.date}</td>
+                    <td className="py-2 pr-3">{isEdit?<Select value={editValues.head} onChange={ev=>setEditValues({...editValues,head:ev.target.value})}>{EXPENSE_HEADS.map(h=><option key={h} value={h}>{h}</option>)}</Select>:<Stamp tone="orange">{e.head}</Stamp>}</td>
+                    <td className="py-2 pr-3 font-bold" style={{fontFamily:F.mono,color:C.zenkyOrange}}>{isEdit?<Input type="number" value={editValues.amount} onChange={ev=>setEditValues({...editValues,amount:ev.target.value})}/>:fmtINR(e.amount)}</td>
+                    <td className="py-2 pr-3" style={{color:C.lightText}}>{isEdit?<Input value={editValues.comment} onChange={ev=>setEditValues({...editValues,comment:ev.target.value})}/>:(e.comment||"—")}</td>
+                    <td className="py-2 pr-3">
+                      <div className="flex items-center gap-1 justify-end">
+                        {isEdit?(<><GhostButton title="Save" onClick={()=>saveEdit(e.id)}><Check size={13}/></GhostButton><GhostButton title="Cancel" onClick={()=>setEditId(null)}><X size={13}/></GhostButton></>)
+                        :deleteId===e.id?(<><GhostButton title="Confirm" onClick={()=>removeExpense(e.id)}><Check size={13}/></GhostButton><GhostButton title="Cancel" onClick={()=>setDeleteId(null)}><X size={13}/></GhostButton></>)
+                        :(<><GhostButton title="Edit" onClick={()=>{setEditId(e.id);setEditValues({date:e.date,head:e.head,amount:e.amount,comment:e.comment});}}><Pencil size={13}/></GhostButton><GhostButton title="Delete" onClick={()=>setDeleteId(e.id)}><Trash2 size={13}/></GhostButton></>)}
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })}</tbody>
             </table></div>
           )}
         </Card>
@@ -2158,6 +2245,9 @@ function FinancialsView({investors,setInvestors,investments,setInvestments,expen
   /* ── Income ── */
   function Income(){
     const [form,setForm]=useState({date:new Date().toISOString().slice(0,10),head:"",amount:"",comment:""});
+    const [editId,setEditId]=useState(null);
+    const [editValues,setEditValues]=useState({});
+    const [deleteId,setDeleteId]=useState(null);
     const amazonRevenue=useMemo(()=>salesLines.filter(l=>l.channel==="amazon").reduce((s,l)=>s+l.revenue,0),[salesLines]);
     const websiteRevenue=useMemo(()=>salesLines.filter(l=>l.channel==="website").reduce((s,l)=>s+l.revenue,0),[salesLines]);
     function add(){
@@ -2169,6 +2259,21 @@ function FinancialsView({investors,setInvestors,investments,setInvestments,expen
       logActivity?.("Income added",`${form.head} — ${fmtINR(amount)}`);
       showToast("success",`Added income — ${fmtINR(amount)}. ✨`);
       setForm({date:form.date,head:"",amount:"",comment:""});
+    }
+    function saveEdit(id){
+      const amount=Number(editValues.amount);
+      if(!editValues.head){showToast("error","Choose an income head.");return;}
+      if(!amount||amount<=0){showToast("error","Enter a valid amount.");return;}
+      setIncome(income.map(i=>i.id===id?{...i,date:editValues.date,head:editValues.head,amount,comment:editValues.comment}:i));
+      logActivity?.("Income edited",`${editValues.head} — ${fmtINR(amount)}`);
+      showToast("success","Saved. ✨");
+      setEditId(null);
+    }
+    function removeIncome(id){
+      setIncome(income.filter(i=>i.id!==id));
+      logActivity?.("Income deleted",id);
+      showToast("success","Income entry removed.");
+      setDeleteId(null);
     }
     return(
       <div>
@@ -2197,15 +2302,25 @@ function FinancialsView({investors,setInvestors,investments,setInvestments,expen
           </div>
           {income.length===0?<Empty icon={IndianRupee} title="No income logged" message="Add your first income entry above."/>:(
             <div className="overflow-x-auto"><table className="w-full text-sm">
-              <thead><tr style={{color:C.lightText}}><th className="py-2 pr-3 text-left font-bold text-xs uppercase">Date</th><th className="py-2 pr-3 text-left font-bold text-xs uppercase">Head</th><th className="py-2 pr-3 text-left font-bold text-xs uppercase">Amount</th><th className="py-2 pr-3 text-left font-bold text-xs uppercase">Comment</th></tr></thead>
-              <tbody>{[...income].sort((a,b)=>new Date(b.date)-new Date(a.date)).map(i=>(
-                <tr key={i.id} className="border-t" style={{borderColor:C.border}}>
-                  <td className="py-2 pr-3" style={{fontFamily:F.mono,color:C.lightText}}>{i.date}</td>
-                  <td className="py-2 pr-3"><Stamp tone="mint">{i.head}</Stamp></td>
-                  <td className="py-2 pr-3 font-bold" style={{fontFamily:F.mono,color:C.mintGreen}}>{fmtINR(i.amount)}</td>
-                  <td className="py-2 pr-3" style={{color:C.lightText}}>{i.comment||"—"}</td>
-                </tr>
-              ))}</tbody>
+              <thead><tr style={{color:C.lightText}}><th className="py-2 pr-3 text-left font-bold text-xs uppercase">Date</th><th className="py-2 pr-3 text-left font-bold text-xs uppercase">Head</th><th className="py-2 pr-3 text-left font-bold text-xs uppercase">Amount</th><th className="py-2 pr-3 text-left font-bold text-xs uppercase">Comment</th><th/></tr></thead>
+              <tbody>{[...income].sort((a,b)=>new Date(b.date)-new Date(a.date)).map(i=>{
+                const isEdit=editId===i.id;
+                return(
+                  <tr key={i.id} className="border-t" style={{borderColor:C.border}}>
+                    <td className="py-2 pr-3" style={{fontFamily:F.mono,color:C.lightText}}>{isEdit?<Input type="date" value={editValues.date} onChange={e=>setEditValues({...editValues,date:e.target.value})}/>:i.date}</td>
+                    <td className="py-2 pr-3">{isEdit?<Select value={editValues.head} onChange={e=>setEditValues({...editValues,head:e.target.value})}>{INCOME_HEADS.map(h=><option key={h} value={h}>{h}</option>)}</Select>:<Stamp tone="mint">{i.head}</Stamp>}</td>
+                    <td className="py-2 pr-3 font-bold" style={{fontFamily:F.mono,color:C.mintGreen}}>{isEdit?<Input type="number" value={editValues.amount} onChange={e=>setEditValues({...editValues,amount:e.target.value})}/>:fmtINR(i.amount)}</td>
+                    <td className="py-2 pr-3" style={{color:C.lightText}}>{isEdit?<Input value={editValues.comment} onChange={e=>setEditValues({...editValues,comment:e.target.value})}/>:(i.comment||"—")}</td>
+                    <td className="py-2 pr-3">
+                      <div className="flex items-center gap-1 justify-end">
+                        {isEdit?(<><GhostButton title="Save" onClick={()=>saveEdit(i.id)}><Check size={13}/></GhostButton><GhostButton title="Cancel" onClick={()=>setEditId(null)}><X size={13}/></GhostButton></>)
+                        :deleteId===i.id?(<><GhostButton title="Confirm" onClick={()=>removeIncome(i.id)}><Check size={13}/></GhostButton><GhostButton title="Cancel" onClick={()=>setDeleteId(null)}><X size={13}/></GhostButton></>)
+                        :(<><GhostButton title="Edit" onClick={()=>{setEditId(i.id);setEditValues({date:i.date,head:i.head,amount:i.amount,comment:i.comment});}}><Pencil size={13}/></GhostButton><GhostButton title="Delete" onClick={()=>setDeleteId(i.id)}><Trash2 size={13}/></GhostButton></>)}
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })}</tbody>
             </table></div>
           )}
         </Card>
