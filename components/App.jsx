@@ -24,6 +24,20 @@ const MARGIN_OPTIONS = [20, 25, 30, 35, 40, 45];
 const MRP_DISCOUNTS  = [50, 55, 60, 65, 70, 75, 80];
 
 const DEFAULT_ADMIN_PIN = "2468"; // used only if no PIN has ever been set in Access Management
+const DEFAULT_LOGIN = { username: "admin", password: "zenkybox123" }; // used only until changed in Access Management
+
+// Your requested heads, plus a few standard ones common to small D2C/Amazon
+// businesses that are easy to miss (flagged below so you can drop any you
+// don't need) — Returns & Refunds, Salary & Wages, Payment Gateway/Bank
+// Charges, and Software & Hosting (beyond just AI/Meta subscriptions).
+const EXPENSE_HEADS = [
+  "Product Procurement","Ad Expenses","Packaging Expenses","Branding Expenses",
+  "Travel Expenses","Food Expenses","Taxes","Registration Fee","Trademark Registration Fee",
+  "AI Subscription","Meta Subscription",
+  "Salary & Wages","Payment Gateway / Bank Charges","Returns & Refunds","Software & Hosting",
+  "Other Expenses",
+];
+const INCOME_HEADS = ["Income from Amazon","Income from Website","Other Income"];
 
 const NAV = [
   { id:"dashboard",       label:"Dashboard",         icon:LayoutDashboard, adminOnly:false },
@@ -35,6 +49,7 @@ const NAV = [
   { id:"reports",         label:"Reports",           icon:FileText,        adminOnly:false },
   { id:"sales-reports",   label:"ZenkyBox Sales Report", icon:BarChart3,   adminOnly:false },
   { id:"costing",         label:"Costing & Pricing", icon:Calculator,      adminOnly:true  },
+  { id:"financials",      label:"Financials",        icon:IndianRupee,     adminOnly:true  },
   { id:"source-data",     label:"Source Data",       icon:Database,        adminOnly:true  },
   { id:"access",          label:"Access Management", icon:Users,           adminOnly:true  },
 ];
@@ -289,7 +304,49 @@ function ImageGallery({images=[],onAddImages,onRemoveImage}){
 }
 
 /* ═══ SIDEBAR ═══ */
-function Sidebar({view,setView,open,setOpen,synced,role,onUnlock,onLock}){
+/* ═══ LOGIN GATE ═══ */
+function LoginScreen({onLogin}){
+  const [username,setUsername]=useState("");
+  const [password,setPassword]=useState("");
+  const [error,setError]=useState("");
+
+  function submit(){
+    if(!onLogin(username.trim(),password)){
+      setError("Incorrect username or password.");
+    }
+  }
+
+  return(
+    <div className="flex items-center justify-center h-screen p-6" style={{backgroundColor:C.bgLight,fontFamily:F.body}}>
+      <style>{`@import url('https://fonts.googleapis.com/css2?family=Fredoka:wght@400;500;600;700&family=Nunito:wght@400;500;600;700&display=swap');`}</style>
+      <div className="w-full max-w-sm">
+        <div className="text-center mb-6">
+          <div style={{fontFamily:F.display,color:C.zenkyPurple,fontSize:"32px",fontWeight:"black"}}>✨ ZenkyBox</div>
+          <div className="text-xs mt-1 font-bold uppercase" style={{color:C.lightText,letterSpacing:"0.05em"}}>📦 Inventory Hub</div>
+        </div>
+        <div className="rounded-2xl border-2 p-6" style={{backgroundColor:C.softWhite,borderColor:C.border}}>
+          <h2 className="font-black text-lg mb-4 text-center" style={{fontFamily:F.display,color:C.darkText}}>Sign in to continue</h2>
+          <div className="space-y-3">
+            <div>
+              <label className="text-xs font-bold uppercase block mb-1" style={{color:C.lightText}}>Username</label>
+              <Input value={username} onChange={e=>{setUsername(e.target.value);setError("");}} onKeyDown={e=>e.key==="Enter"&&submit()} autoFocus/>
+            </div>
+            <div>
+              <label className="text-xs font-bold uppercase block mb-1" style={{color:C.lightText}}>Password</label>
+              <Input type="password" value={password} onChange={e=>{setPassword(e.target.value);setError("");}} onKeyDown={e=>e.key==="Enter"&&submit()}/>
+            </div>
+            {error&&<p className="text-xs font-bold" style={{color:"#dc2626"}}>{error}</p>}
+            <PrimaryButton onClick={submit}><Lock size={15}/>Sign In</PrimaryButton>
+          </div>
+        </div>
+        <p className="text-xs text-center mt-4" style={{color:C.lightText}}>Access is restricted. Contact your ZenkyBox admin for credentials.</p>
+      </div>
+    </div>
+  );
+}
+
+
+function Sidebar({view,setView,open,setOpen,synced,role,onUnlock,onLock,onLogout}){
   const [showPinBox,setShowPinBox]=useState(false);
   const [pinInput,setPinInput]=useState("");
   const visibleNav=NAV.filter(item=>!item.adminOnly||role==="admin");
@@ -337,6 +394,9 @@ function Sidebar({view,setView,open,setOpen,synced,role,onUnlock,onLock}){
           ):(
             <button onClick={()=>setShowPinBox(true)} className="inline-flex items-center gap-1.5 text-xs font-bold" style={{color:"rgba(255,255,255,0.7)",fontFamily:F.body}}><Lock size={13}/>Staff mode — unlock admin</button>
           )}
+        </div>
+        <div className="px-5 py-2.5 text-xs border-t text-center" style={{borderColor:"rgba(255,255,255,0.15)"}}>
+          <button onClick={onLogout} className="font-bold underline" style={{color:"rgba(255,255,255,0.7)"}}>Log Out</button>
         </div>
         <div className="px-5 py-3 text-xs border-t text-center font-semibold" style={{borderColor:"rgba(255,255,255,0.15)",color:"rgba(255,255,255,0.6)",fontFamily:F.body}}>
           💝 Thoughtful Gifts. Joyful Moments.
@@ -1598,7 +1658,7 @@ function SalesReportsView({salesLines,skus,combos}){
 }
 
 /* ═══ SOURCE DATA (Admin only) ═══ */
-function SourceDataView({activityLog,synced,salesLines,setSalesLines,reports,setReports,skus,setSkus,combos,adminPin,forceSaveNow,logActivity,showToast}){
+function SourceDataView({activityLog,synced,salesLines,setSalesLines,reports,setReports,skus,setSkus,combos,adminPin,loginCreds,investors,investments,expenses,income,forceSaveNow,logActivity,showToast}){
   const dbUrl=process.env.NEXT_PUBLIC_SUPABASE_URL||"";
   const [scanResult,setScanResult]=useState(null); // {dupeGroups, extraQtyBySku, linesToRemove}
   const [confirmText,setConfirmText]=useState("");
@@ -1656,7 +1716,7 @@ function SourceDataView({activityLog,synced,salesLines,setSalesLines,reports,set
     logActivity?.("Cleaned duplicate sales data",`Removed ${scanResult.totalDuplicateLines} duplicate order lines, restored stock for ${Object.keys(scanResult.extraQtyBySku).length} SKUs`);
     // Write the corrected state to Supabase immediately — don't wait for the
     // normal debounce, which leaves a window for a stale tab to resave old data.
-    forceSaveNow?.({skus:newSkus,combos,reports,salesLines:newSalesLines,activityLog:newActivityLog,adminPin});
+    forceSaveNow?.({skus:newSkus,combos,reports,salesLines:newSalesLines,activityLog:newActivityLog,adminPin,loginCreds,investors,investments,expenses,income});
     showToast("success",`Removed ${scanResult.totalDuplicateLines} duplicate entries and restored stock. ✨`);
     setScanResult(null);setShowConfirm(false);setConfirmText("");
   }
@@ -1680,7 +1740,7 @@ function SourceDataView({activityLog,synced,salesLines,setSalesLines,reports,set
     // the normal 500ms debounce left a window where a stale open tab elsewhere
     // could resave its old (pre-flush) state and overwrite this. Forcing the
     // write right now, with the exact new values, closes that window.
-    forceSaveNow?.({skus:newSkus,combos,reports:[],salesLines:[],activityLog:newActivityLog,adminPin});
+    forceSaveNow?.({skus:newSkus,combos,reports:[],salesLines:[],activityLog:newActivityLog,adminPin,loginCreds,investors,investments,expenses,income});
     showToast("success","All sales data flushed and stock reset to baseline. 🗑️");
     setShowFlushConfirm(false);setFlushConfirmText("");
   }
@@ -1815,15 +1875,27 @@ function SourceDataView({activityLog,synced,salesLines,setSalesLines,reports,set
 }
 
 /* ═══ ACCESS MANAGEMENT (Admin only) ═══ */
-function AccessManagementView({role,adminPin,setAdminPin,showToast,logActivity}){
+function AccessManagementView({role,adminPin,setAdminPin,loginCreds,setLoginCreds,showToast,logActivity}){
   const [newPin,setNewPin]=useState("");
   const [confirmPin,setConfirmPin]=useState("");
+  const [newUsername,setNewUsername]=useState("");
+  const [newPassword,setNewPassword]=useState("");
+  const [confirmPassword,setConfirmPassword]=useState("");
   function savePin(){
     if(newPin.length<4){showToast("error","PIN must be at least 4 characters.");return;}
     if(newPin!==confirmPin){showToast("error","PINs don't match.");return;}
     setAdminPin(newPin);setNewPin("");setConfirmPin("");
     logActivity?.("Admin PIN changed","Access PIN updated by admin");
     showToast("success","Admin PIN updated. ✨");
+  }
+  function saveLogin(){
+    if(!newUsername.trim()){showToast("error","Username can't be empty.");return;}
+    if(newPassword.length<6){showToast("error","Password must be at least 6 characters.");return;}
+    if(newPassword!==confirmPassword){showToast("error","Passwords don't match.");return;}
+    setLoginCreds({username:newUsername.trim(),password:newPassword});
+    setNewUsername("");setNewPassword("");setConfirmPassword("");
+    logActivity?.("Login credentials changed",`Username updated to "${newUsername.trim()}"`);
+    showToast("success","Login credentials updated. Use them next time you sign in. ✨");
   }
   return(
     <div>
@@ -1837,7 +1909,7 @@ function AccessManagementView({role,adminPin,setAdminPin,showToast,logActivity})
             <ul className="text-xs space-y-1" style={{color:C.darkText}}>
               <li>• Edit / delete SKUs & combos, Clear All</li>
               <li>• Bulk Import (including Replace All)</li>
-              <li>• Costing & Pricing calculator</li>
+              <li>• Costing & Pricing, Financials</li>
               <li>• Source Data & Access Management</li>
             </ul>
           </div>
@@ -1847,13 +1919,25 @@ function AccessManagementView({role,adminPin,setAdminPin,showToast,logActivity})
               <li>• Add new SKUs & combos (no edit/delete)</li>
               <li>• Upload sales reports</li>
               <li>• View Dashboard, Combo Readiness, Reports, Sales Report</li>
-              <li>• Cannot clear data, bulk-replace, or view Source Data</li>
+              <li>• Cannot clear data, bulk-replace, view Financials, or Source Data</li>
             </ul>
           </div>
         </div>
         <p className="text-xs mt-4 p-2.5 rounded-lg" style={{backgroundColor:"#FFF3E6",color:"#9a5b0f"}}>
-          ⚠️ This is a lightweight PIN gate stored with your workspace data — enough to prevent accidental changes by staff, but not bank-grade security (there's no per-person login). For real multi-user accounts, Supabase Auth would be the next upgrade.
+          ⚠️ The login screen and this PIN are both lightweight gates stored with your workspace data — enough to keep casual visitors and staff out of critical actions, but not bank-grade security (no per-person accounts, no audit-proof enforcement). For real multi-user accounts, Supabase Auth would be the next upgrade.
         </p>
+      </Card>
+
+      <Card className="mb-6">
+        <h3 className="font-bold text-lg mb-4" style={{fontFamily:F.display,color:C.darkText}}>Change Login Credentials</h3>
+        <p className="text-xs mb-3" style={{color:C.lightText}}>This is the username/password required to open the app at all — separate from the admin PIN below.</p>
+        <div className="grid sm:grid-cols-3 gap-3 max-w-2xl">
+          <Input placeholder="New username" value={newUsername} onChange={e=>setNewUsername(e.target.value)}/>
+          <Input type="password" placeholder="New password (min 6 chars)" value={newPassword} onChange={e=>setNewPassword(e.target.value)}/>
+          <Input type="password" placeholder="Confirm password" value={confirmPassword} onChange={e=>setConfirmPassword(e.target.value)}/>
+        </div>
+        <div className="mt-3"><PrimaryButton onClick={saveLogin}><Save size={15}/>Update Login Credentials</PrimaryButton></div>
+        <p className="text-xs mt-3" style={{color:C.lightText}}>Current username is {loginCreds?.username?`"${loginCreds.username}" (set)`:`the default ("${DEFAULT_LOGIN.username}") — change this before sharing your app link.`}</p>
       </Card>
 
       <Card>
@@ -1869,6 +1953,344 @@ function AccessManagementView({role,adminPin,setAdminPin,showToast,logActivity})
   );
 }
 
+/* ═══ FINANCIALS ═══ */
+function FinancialsView({investors,setInvestors,investments,setInvestments,expenses,setExpenses,income,setIncome,salesLines,logActivity,showToast}){
+  const [tab,setTab]=useState("overview");
+  const TABS=[
+    {id:"overview",label:"Overview"},
+    {id:"investors",label:"Investors"},
+    {id:"expenses",label:"Expenses"},
+    {id:"income",label:"Income"},
+    {id:"reports",label:"Reports"},
+  ];
+
+  const totalInvested=useMemo(()=>investments.reduce((s,i)=>s+Number(i.amount||0),0),[investments]);
+  const totalIncome=useMemo(()=>income.reduce((s,i)=>s+Number(i.amount||0),0),[income]);
+  const totalExpenses=useMemo(()=>expenses.reduce((s,e)=>s+Number(e.amount||0),0),[expenses]);
+  const fundBalance=totalInvested+totalIncome-totalExpenses;
+
+  function exportCsv(rows,headers,filename){
+    let csv=headers.join(",")+"\n";
+    rows.forEach(r=>csv+=headers.map(h=>{const v=r[h];return typeof v==="string"&&v.includes(",")?`"${v}"`:v;}).join(",")+"\n");
+    downloadCsv(filename,csv);
+  }
+
+  /* ── Overview ── */
+  function Overview(){
+    const recent=useMemo(()=>{
+      const all=[
+        ...investments.map(i=>({...i,kind:"Investment",head:i.investorName})),
+        ...income.map(i=>({...i,kind:"Income"})),
+        ...expenses.map(e=>({...e,kind:"Expense"})),
+      ];
+      return all.sort((a,b)=>new Date(b.date)-new Date(a.date)).slice(0,10);
+    },[]);
+    return(
+      <div>
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-6">
+          <Card><div className="text-xs font-bold uppercase" style={{color:C.lightText}}>Total Invested</div><div className="text-2xl font-black mt-1" style={{fontFamily:F.display,color:C.zenkyPurple}}>{fmtINR(totalInvested)}</div></Card>
+          <Card><div className="text-xs font-bold uppercase" style={{color:C.lightText}}>Total Income</div><div className="text-2xl font-black mt-1" style={{fontFamily:F.display,color:C.mintGreen}}>{fmtINR(totalIncome)}</div></Card>
+          <Card><div className="text-xs font-bold uppercase" style={{color:C.lightText}}>Total Expenses</div><div className="text-2xl font-black mt-1" style={{fontFamily:F.display,color:C.zenkyOrange}}>{fmtINR(totalExpenses)}</div></Card>
+          <Card style={{borderColor:fundBalance>=0?C.mintGreen:C.zenkyPink}}><div className="text-xs font-bold uppercase" style={{color:C.lightText}}>Fund Balance</div><div className="text-2xl font-black mt-1" style={{fontFamily:F.display,color:fundBalance>=0?C.mintGreen:C.zenkyPink}}>{fmtINR(fundBalance)}</div></Card>
+        </div>
+        <Card>
+          <h3 className="font-bold text-lg mb-4" style={{fontFamily:F.display,color:C.darkText}}>Recent Activity</h3>
+          {recent.length===0?<Empty icon={IndianRupee} title="No financial activity yet" message="Add investors, income, or expenses to see them here."/>:(
+            <div className="overflow-x-auto"><table className="w-full text-sm">
+              <thead><tr style={{color:C.lightText}}><th className="py-2 pr-3 text-left font-bold text-xs uppercase">Date</th><th className="py-2 pr-3 text-left font-bold text-xs uppercase">Type</th><th className="py-2 pr-3 text-left font-bold text-xs uppercase">Head</th><th className="py-2 pr-3 text-left font-bold text-xs uppercase">Amount</th><th className="py-2 pr-3 text-left font-bold text-xs uppercase">Comment</th></tr></thead>
+              <tbody>{recent.map(r=>(
+                <tr key={r.id} className="border-t" style={{borderColor:C.border}}>
+                  <td className="py-2 pr-3" style={{fontFamily:F.mono,color:C.lightText}}>{r.date}</td>
+                  <td className="py-2 pr-3"><Stamp tone={r.kind==="Expense"?"pink":r.kind==="Income"?"mint":"purple"}>{r.kind}</Stamp></td>
+                  <td className="py-2 pr-3">{r.head}</td>
+                  <td className="py-2 pr-3 font-bold" style={{fontFamily:F.mono}}>{fmtINR(r.amount)}</td>
+                  <td className="py-2 pr-3" style={{color:C.lightText}}>{r.comment||"—"}</td>
+                </tr>
+              ))}</tbody>
+            </table></div>
+          )}
+        </Card>
+      </div>
+    );
+  }
+
+  /* ── Investors ── */
+  function Investors(){
+    const [invForm,setInvForm]=useState({name:"",contact:"",notes:""});
+    const [txForm,setTxForm]=useState({investorId:"",amount:"",date:new Date().toISOString().slice(0,10),comment:""});
+
+    function addInvestor(){
+      if(!invForm.name.trim()){showToast("error","Investor name required.");return;}
+      const inv={id:Date.now().toString(),name:invForm.name.trim(),contact:invForm.contact.trim(),notes:invForm.notes.trim()};
+      setInvestors([...investors,inv]);
+      logActivity?.("Investor added",inv.name);
+      showToast("success",`Added investor ${inv.name}. ✨`);
+      setInvForm({name:"",contact:"",notes:""});
+    }
+    function addInvestment(){
+      const investor=investors.find(i=>i.id===txForm.investorId);
+      const amount=Number(txForm.amount);
+      if(!investor){showToast("error","Choose an investor.");return;}
+      if(!amount||amount<=0){showToast("error","Enter a valid amount.");return;}
+      const tx={id:Date.now().toString(),investorId:investor.id,investorName:investor.name,amount,date:txForm.date,comment:txForm.comment.trim()};
+      setInvestments([...investments,tx]);
+      logActivity?.("Investment logged",`${investor.name} — ${fmtINR(amount)}`);
+      showToast("success",`Logged ${fmtINR(amount)} from ${investor.name}. ✨`);
+      setTxForm({investorId:"",amount:"",date:txForm.date,comment:""});
+    }
+    const perInvestor=useMemo(()=>{
+      const totals={};
+      investments.forEach(t=>{totals[t.investorId]=(totals[t.investorId]||0)+Number(t.amount||0);});
+      return totals;
+    },[]);
+
+    return(
+      <div>
+        <Card className="mb-6">
+          <h3 className="font-bold text-lg mb-4" style={{fontFamily:F.display,color:C.darkText}}>Investor Master</h3>
+          <div className="grid sm:grid-cols-3 gap-2 mb-3">
+            <Input placeholder="Investor name" value={invForm.name} onChange={e=>setInvForm({...invForm,name:e.target.value})}/>
+            <Input placeholder="Contact (phone/email)" value={invForm.contact} onChange={e=>setInvForm({...invForm,contact:e.target.value})}/>
+            <Input placeholder="Notes (optional)" value={invForm.notes} onChange={e=>setInvForm({...invForm,notes:e.target.value})}/>
+          </div>
+          <PrimaryButton onClick={addInvestor}><Plus size={16}/>Add Investor</PrimaryButton>
+
+          {investors.length>0&&(
+            <div className="mt-5 overflow-x-auto"><table className="w-full text-sm">
+              <thead><tr style={{color:C.lightText}}><th className="py-2 pr-3 text-left font-bold text-xs uppercase">Name</th><th className="py-2 pr-3 text-left font-bold text-xs uppercase">Contact</th><th className="py-2 pr-3 text-left font-bold text-xs uppercase">Notes</th><th className="py-2 pr-3 text-left font-bold text-xs uppercase">Total Invested</th></tr></thead>
+              <tbody>{investors.map(inv=>(
+                <tr key={inv.id} className="border-t" style={{borderColor:C.border}}>
+                  <td className="py-2 pr-3 font-bold">{inv.name}</td>
+                  <td className="py-2 pr-3" style={{color:C.lightText}}>{inv.contact||"—"}</td>
+                  <td className="py-2 pr-3" style={{color:C.lightText}}>{inv.notes||"—"}</td>
+                  <td className="py-2 pr-3 font-bold" style={{fontFamily:F.mono,color:C.zenkyPurple}}>{fmtINR(perInvestor[inv.id]||0)}</td>
+                </tr>
+              ))}</tbody>
+            </table></div>
+          )}
+        </Card>
+
+        <Card>
+          <h3 className="font-bold text-lg mb-4" style={{fontFamily:F.display,color:C.darkText}}>Log an Investment</h3>
+          {investors.length===0?<p className="text-sm" style={{color:C.lightText}}>Add an investor above first.</p>:(
+            <>
+              <div className="grid sm:grid-cols-4 gap-2 mb-3">
+                <Select value={txForm.investorId} onChange={e=>setTxForm({...txForm,investorId:e.target.value})}>
+                  <option value="">Select investor…</option>
+                  {investors.map(i=><option key={i.id} value={i.id}>{i.name}</option>)}
+                </Select>
+                <div className="relative"><span className="absolute left-3 top-2.5 text-sm" style={{color:C.lightText}}>₹</span><Input placeholder="Amount" type="number" className="pl-6" value={txForm.amount} onChange={e=>setTxForm({...txForm,amount:e.target.value})}/></div>
+                <Input type="date" value={txForm.date} onChange={e=>setTxForm({...txForm,date:e.target.value})}/>
+                <Input placeholder="Comment (optional)" value={txForm.comment} onChange={e=>setTxForm({...txForm,comment:e.target.value})}/>
+              </div>
+              <PrimaryButton onClick={addInvestment}><Plus size={16}/>Log Investment</PrimaryButton>
+            </>
+          )}
+          {investments.length>0&&(
+            <div className="mt-5 overflow-x-auto"><table className="w-full text-sm">
+              <thead><tr style={{color:C.lightText}}><th className="py-2 pr-3 text-left font-bold text-xs uppercase">Date</th><th className="py-2 pr-3 text-left font-bold text-xs uppercase">Investor</th><th className="py-2 pr-3 text-left font-bold text-xs uppercase">Amount</th><th className="py-2 pr-3 text-left font-bold text-xs uppercase">Comment</th></tr></thead>
+              <tbody>{[...investments].sort((a,b)=>new Date(b.date)-new Date(a.date)).map(t=>(
+                <tr key={t.id} className="border-t" style={{borderColor:C.border}}>
+                  <td className="py-2 pr-3" style={{fontFamily:F.mono,color:C.lightText}}>{t.date}</td>
+                  <td className="py-2 pr-3 font-bold">{t.investorName}</td>
+                  <td className="py-2 pr-3 font-bold" style={{fontFamily:F.mono,color:C.zenkyPurple}}>{fmtINR(t.amount)}</td>
+                  <td className="py-2 pr-3" style={{color:C.lightText}}>{t.comment||"—"}</td>
+                </tr>
+              ))}</tbody>
+            </table></div>
+          )}
+        </Card>
+      </div>
+    );
+  }
+
+  /* ── Expenses ── */
+  function Expenses(){
+    const [form,setForm]=useState({date:new Date().toISOString().slice(0,10),head:"",amount:"",comment:""});
+    function add(){
+      const amount=Number(form.amount);
+      if(!form.head){showToast("error","Choose an expense head.");return;}
+      if(!amount||amount<=0){showToast("error","Enter a valid amount.");return;}
+      const e={id:Date.now().toString(),date:form.date,head:form.head,amount,comment:form.comment.trim()};
+      setExpenses([...expenses,e]);
+      logActivity?.("Expense added",`${form.head} — ${fmtINR(amount)}`);
+      showToast("success",`Added expense — ${fmtINR(amount)}. ✨`);
+      setForm({date:form.date,head:"",amount:"",comment:""});
+    }
+    return(
+      <div>
+        <Card className="mb-6">
+          <h3 className="font-bold text-lg mb-4" style={{fontFamily:F.display,color:C.darkText}}>Add an Expense</h3>
+          <div className="grid sm:grid-cols-4 gap-2 mb-3">
+            <Input type="date" value={form.date} onChange={e=>setForm({...form,date:e.target.value})}/>
+            <Select value={form.head} onChange={e=>setForm({...form,head:e.target.value})}>
+              <option value="">Select head…</option>
+              {EXPENSE_HEADS.map(h=><option key={h} value={h}>{h}</option>)}
+            </Select>
+            <div className="relative"><span className="absolute left-3 top-2.5 text-sm" style={{color:C.lightText}}>₹</span><Input placeholder="Amount" type="number" className="pl-6" value={form.amount} onChange={e=>setForm({...form,amount:e.target.value})}/></div>
+            <Input placeholder="Comment (optional)" value={form.comment} onChange={e=>setForm({...form,comment:e.target.value})}/>
+          </div>
+          <PrimaryButton onClick={add}><Plus size={16}/>Add Expense</PrimaryButton>
+        </Card>
+        <Card>
+          <div className="flex items-center justify-between mb-4">
+            <h3 className="font-bold text-lg" style={{fontFamily:F.display,color:C.darkText}}>{expenses.length} Expense{expenses.length!==1?"s":""}</h3>
+            {expenses.length>0&&<button onClick={()=>exportCsv(expenses,["date","head","amount","comment"],"expenses.csv")} className="inline-flex items-center gap-1 text-xs font-bold" style={{color:C.zenkyOrange}}><Download size={13}/>Export</button>}
+          </div>
+          {expenses.length===0?<Empty icon={IndianRupee} title="No expenses logged" message="Add your first expense above."/>:(
+            <div className="overflow-x-auto"><table className="w-full text-sm">
+              <thead><tr style={{color:C.lightText}}><th className="py-2 pr-3 text-left font-bold text-xs uppercase">Date</th><th className="py-2 pr-3 text-left font-bold text-xs uppercase">Head</th><th className="py-2 pr-3 text-left font-bold text-xs uppercase">Amount</th><th className="py-2 pr-3 text-left font-bold text-xs uppercase">Comment</th></tr></thead>
+              <tbody>{[...expenses].sort((a,b)=>new Date(b.date)-new Date(a.date)).map(e=>(
+                <tr key={e.id} className="border-t" style={{borderColor:C.border}}>
+                  <td className="py-2 pr-3" style={{fontFamily:F.mono,color:C.lightText}}>{e.date}</td>
+                  <td className="py-2 pr-3"><Stamp tone="orange">{e.head}</Stamp></td>
+                  <td className="py-2 pr-3 font-bold" style={{fontFamily:F.mono,color:C.zenkyOrange}}>{fmtINR(e.amount)}</td>
+                  <td className="py-2 pr-3" style={{color:C.lightText}}>{e.comment||"—"}</td>
+                </tr>
+              ))}</tbody>
+            </table></div>
+          )}
+        </Card>
+      </div>
+    );
+  }
+
+  /* ── Income ── */
+  function Income(){
+    const [form,setForm]=useState({date:new Date().toISOString().slice(0,10),head:"",amount:"",comment:""});
+    const amazonRevenue=useMemo(()=>salesLines.filter(l=>l.channel==="amazon").reduce((s,l)=>s+l.revenue,0),[salesLines]);
+    const websiteRevenue=useMemo(()=>salesLines.filter(l=>l.channel==="website").reduce((s,l)=>s+l.revenue,0),[salesLines]);
+    function add(){
+      const amount=Number(form.amount);
+      if(!form.head){showToast("error","Choose an income head.");return;}
+      if(!amount||amount<=0){showToast("error","Enter a valid amount.");return;}
+      const i={id:Date.now().toString(),date:form.date,head:form.head,amount,comment:form.comment.trim()};
+      setIncome([...income,i]);
+      logActivity?.("Income added",`${form.head} — ${fmtINR(amount)}`);
+      showToast("success",`Added income — ${fmtINR(amount)}. ✨`);
+      setForm({date:form.date,head:"",amount:"",comment:""});
+    }
+    return(
+      <div>
+        {(amazonRevenue>0||websiteRevenue>0)&&(
+          <div className="mb-4 p-3 rounded-xl text-xs" style={{backgroundColor:C.bgLight,color:C.lightText}}>
+            For reference — ZenkyBox Sales Report currently shows <strong>{fmtINR(amazonRevenue)}</strong> Amazon revenue and <strong>{fmtINR(websiteRevenue)}</strong> Website revenue from uploaded orders. This is separate from what you log here — log actual payout amounts received if they differ (fees, timing, etc.).
+          </div>
+        )}
+        <Card className="mb-6">
+          <h3 className="font-bold text-lg mb-4" style={{fontFamily:F.display,color:C.darkText}}>Add Income</h3>
+          <div className="grid sm:grid-cols-4 gap-2 mb-3">
+            <Input type="date" value={form.date} onChange={e=>setForm({...form,date:e.target.value})}/>
+            <Select value={form.head} onChange={e=>setForm({...form,head:e.target.value})}>
+              <option value="">Select head…</option>
+              {INCOME_HEADS.map(h=><option key={h} value={h}>{h}</option>)}
+            </Select>
+            <div className="relative"><span className="absolute left-3 top-2.5 text-sm" style={{color:C.lightText}}>₹</span><Input placeholder="Amount" type="number" className="pl-6" value={form.amount} onChange={e=>setForm({...form,amount:e.target.value})}/></div>
+            <Input placeholder="Comment (optional)" value={form.comment} onChange={e=>setForm({...form,comment:e.target.value})}/>
+          </div>
+          <PrimaryButton onClick={add}><Plus size={16}/>Add Income</PrimaryButton>
+        </Card>
+        <Card>
+          <div className="flex items-center justify-between mb-4">
+            <h3 className="font-bold text-lg" style={{fontFamily:F.display,color:C.darkText}}>{income.length} Income Entr{income.length!==1?"ies":"y"}</h3>
+            {income.length>0&&<button onClick={()=>exportCsv(income,["date","head","amount","comment"],"income.csv")} className="inline-flex items-center gap-1 text-xs font-bold" style={{color:C.zenkyOrange}}><Download size={13}/>Export</button>}
+          </div>
+          {income.length===0?<Empty icon={IndianRupee} title="No income logged" message="Add your first income entry above."/>:(
+            <div className="overflow-x-auto"><table className="w-full text-sm">
+              <thead><tr style={{color:C.lightText}}><th className="py-2 pr-3 text-left font-bold text-xs uppercase">Date</th><th className="py-2 pr-3 text-left font-bold text-xs uppercase">Head</th><th className="py-2 pr-3 text-left font-bold text-xs uppercase">Amount</th><th className="py-2 pr-3 text-left font-bold text-xs uppercase">Comment</th></tr></thead>
+              <tbody>{[...income].sort((a,b)=>new Date(b.date)-new Date(a.date)).map(i=>(
+                <tr key={i.id} className="border-t" style={{borderColor:C.border}}>
+                  <td className="py-2 pr-3" style={{fontFamily:F.mono,color:C.lightText}}>{i.date}</td>
+                  <td className="py-2 pr-3"><Stamp tone="mint">{i.head}</Stamp></td>
+                  <td className="py-2 pr-3 font-bold" style={{fontFamily:F.mono,color:C.mintGreen}}>{fmtINR(i.amount)}</td>
+                  <td className="py-2 pr-3" style={{color:C.lightText}}>{i.comment||"—"}</td>
+                </tr>
+              ))}</tbody>
+            </table></div>
+          )}
+        </Card>
+      </div>
+    );
+  }
+
+  /* ── Reports (month-over-month) ── */
+  function Reports(){
+    const monthly=useMemo(()=>{
+      const groups={};
+      const add=(date,amount,type,head)=>{
+        const key=monthKey(date);
+        if(!groups[key])groups[key]={key,income:0,expense:0,byHead:{}};
+        groups[key][type]+=amount;
+        const hk=`${type}:${head}`;
+        groups[key].byHead[hk]=(groups[key].byHead[hk]||0)+amount;
+      };
+      income.forEach(i=>add(i.date,Number(i.amount||0),"income",i.head));
+      investments.forEach(i=>add(i.date,Number(i.amount||0),"income",`Investment — ${i.investorName}`));
+      expenses.forEach(e=>add(e.date,Number(e.amount||0),"expense",e.head));
+      return Object.values(groups).sort((a,b)=>new Date(a.key+" 1")-new Date(b.key+" 1"));
+    },[]);
+
+    function exportMonthly(){
+      let csv="Month,Total Income,Total Expense,Net\n";
+      monthly.forEach(m=>csv+=`${m.key},${m.income.toFixed(2)},${m.expense.toFixed(2)},${(m.income-m.expense).toFixed(2)}\n`);
+      csv+="\nMonth,Type,Head,Amount\n";
+      monthly.forEach(m=>Object.entries(m.byHead).forEach(([hk,amt])=>{const[type,head]=hk.split(":");csv+=`${m.key},${type},"${head}",${amt.toFixed(2)}\n`;}));
+      downloadCsv("financial_monthly_report.csv",csv);
+    }
+
+    if(!monthly.length)return<Empty icon={IndianRupee} title="No data yet" message="Add income, investments, or expenses to see monthly reports."/>;
+
+    return(
+      <div>
+        <div className="flex justify-end mb-4"><button onClick={exportMonthly} className="inline-flex items-center gap-1 text-xs font-bold" style={{color:C.zenkyOrange}}><Download size={13}/>Export Monthly Report</button></div>
+        <div className="space-y-4">
+          {monthly.map(m=>(
+            <Card key={m.key}>
+              <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
+                <div className="font-bold text-lg" style={{fontFamily:F.display,color:C.zenkyPurple}}>{m.key}</div>
+                <div className="flex items-center gap-4 text-right">
+                  <div><div className="text-xs" style={{color:C.lightText}}>Income</div><div className="font-bold" style={{fontFamily:F.mono,color:C.mintGreen}}>{fmtINR(m.income)}</div></div>
+                  <div><div className="text-xs" style={{color:C.lightText}}>Expense</div><div className="font-bold" style={{fontFamily:F.mono,color:C.zenkyOrange}}>{fmtINR(m.expense)}</div></div>
+                  <div><div className="text-xs" style={{color:C.lightText}}>Net</div><div className="font-bold" style={{fontFamily:F.mono,color:m.income-m.expense>=0?C.mintGreen:C.zenkyPink}}>{fmtINR(m.income-m.expense)}</div></div>
+                </div>
+              </div>
+              <div className="space-y-1">
+                {Object.entries(m.byHead).sort((a,b)=>b[1]-a[1]).map(([hk,amt])=>{
+                  const[type,head]=hk.split(":");
+                  return(
+                    <div key={hk} className="flex justify-between text-xs py-1 border-t" style={{borderColor:C.border}}>
+                      <span style={{color:C.darkText}}>{head}</span>
+                      <span className="font-bold" style={{fontFamily:F.mono,color:type==="income"?C.mintGreen:C.zenkyOrange}}>{type==="income"?"+":"−"}{fmtINR(amt)}</span>
+                    </div>
+                  );
+                })}
+              </div>
+            </Card>
+          ))}
+        </div>
+      </div>
+    );
+  }
+
+  return(
+    <div>
+      <SectionHeader title="Financials" subtitle="Investors, expenses, income, and overall fund balance."/>
+      <div className="flex gap-1.5 mb-6 overflow-x-auto pb-1">
+        {TABS.map(t=>(
+          <button key={t.id} onClick={()=>setTab(t.id)} className="px-3.5 py-2 rounded-full text-xs font-bold whitespace-nowrap transition-colors" style={{backgroundColor:tab===t.id?C.zenkyPurple:C.softWhite,color:tab===t.id?C.softWhite:C.darkText,border:`2px solid ${tab===t.id?C.zenkyPurple:C.border}`,fontFamily:F.display}}>
+            {t.label}
+          </button>
+        ))}
+      </div>
+      {tab==="overview"&&<Overview/>}
+      {tab==="investors"&&<Investors/>}
+      {tab==="expenses"&&<Expenses/>}
+      {tab==="income"&&<Income/>}
+      {tab==="reports"&&<Reports/>}
+    </div>
+  );
+}
+
 export default function App(){
   const [skus,setSkus]=useState([]);
   const [combos,setCombos]=useState([]);
@@ -1876,6 +2298,11 @@ export default function App(){
   const [salesLines,setSalesLines]=useState([]);
   const [activityLog,setActivityLog]=useState([]);
   const [adminPin,setAdminPinState]=useState("");
+  const [loginCreds,setLoginCredsState]=useState(null);
+  const [investors,setInvestors]=useState([]);
+  const [investments,setInvestments]=useState([]);
+  const [expenses,setExpenses]=useState([]);
+  const [income,setIncome]=useState([]);
   const [loaded,setLoaded]=useState(false);
   const [canSave,setCanSave]=useState(false); // only true once a load has genuinely succeeded — prevents overwriting real data with an empty state after a failed fetch
   const [loadError,setLoadError]=useState(false);
@@ -1884,6 +2311,7 @@ export default function App(){
   const [toast,setToast]=useState(null);
   const [synced,setSynced]=useState(false);
   const [role,setRole]=useState("staff"); // per-device only, not shared across users
+  const [isLoggedIn,setIsLoggedIn]=useState(false); // per-device/session app-wide login gate
 
   // Tracks the newest updated_at timestamp we're aware of — from our own last
   // save OR the last realtime update we accepted. Any incoming realtime event
@@ -1897,6 +2325,9 @@ export default function App(){
     setSkus(data?.skus||[]);setCombos(data?.combos||[]);setReports(data?.reports||[]);
     setSalesLines(data?.salesLines||[]);setActivityLog(data?.activityLog||[]);
     setAdminPinState(data?.adminPin||"");
+    setLoginCredsState(data?.loginCreds||null);
+    setInvestors(data?.investors||[]);setInvestments(data?.investments||[]);
+    setExpenses(data?.expenses||[]);setIncome(data?.income||[]);
   }
 
   // Load initial data — retries a couple of times on failure before giving up,
@@ -1927,6 +2358,7 @@ export default function App(){
         setSynced(hasSync());
       }
       if(typeof window!=="undefined"&&sessionStorage.getItem("zenkybox-role")==="admin")setRole("admin");
+      if(typeof window!=="undefined"&&sessionStorage.getItem("zenkybox-logged-in")==="1")setIsLoggedIn(true);
       if(!cancelled)setLoaded(true);
     })();
     return()=>{cancelled=true;};
@@ -1956,12 +2388,12 @@ export default function App(){
     if(!loaded||!canSave)return;
     clearTimeout(saveTimeout.current);
     saveTimeout.current=setTimeout(()=>{
-      saveData({skus,combos,reports,salesLines,activityLog,adminPin})
+      saveData({skus,combos,reports,salesLines,activityLog,adminPin,loginCreds,investors,investments,expenses,income})
         .then(timestamp=>{if(timestamp)lastKnownUpdatedAt.current=timestamp;})
         .catch(()=>{});
     },500);
     return()=>clearTimeout(saveTimeout.current);
-  },[skus,combos,reports,salesLines,activityLog,adminPin,loaded,canSave]);
+  },[skus,combos,reports,salesLines,activityLog,adminPin,loginCreds,investors,investments,expenses,income,loaded,canSave]);
 
   // For destructive/corrective actions (Flush, Cleanup, Clear All, Replace All) —
   // caller supplies the COMPLETE new payload explicitly (not read from state,
@@ -2010,6 +2442,25 @@ export default function App(){
     showToast("success","Locked to staff mode.");
   }
   function setAdminPin(pin){setAdminPinState(pin);}
+  function setLoginCreds(creds){setLoginCredsState(creds);}
+
+  function handleLogin(username,password){
+    const correct=loginCreds||DEFAULT_LOGIN;
+    if(username===correct.username&&password===correct.password){
+      setIsLoggedIn(true);
+      if(typeof window!=="undefined")sessionStorage.setItem("zenkybox-logged-in","1");
+      return true;
+    }
+    return false;
+  }
+  function handleLogout(){
+    setIsLoggedIn(false);
+    setRole("staff");
+    if(typeof window!=="undefined"){
+      sessionStorage.removeItem("zenkybox-logged-in");
+      sessionStorage.removeItem("zenkybox-role");
+    }
+  }
 
   const skuMap=useMemo(()=>Object.fromEntries(skus.map(s=>[s.sku,s])),[skus]);
   const comboList=useMemo(()=>combos.map(c=>({...c,...comboReadiness(c,skuMap)})),[combos,skuMap]);
@@ -2042,13 +2493,15 @@ export default function App(){
     </div>
   );
 
+  if(!isLoggedIn)return<LoginScreen onLogin={handleLogin}/>;
+
   const currentNavItem=NAV.find(n=>n.id===view);
   const blocked=currentNavItem?.adminOnly&&role!=="admin";
 
   return(
     <div className="flex h-screen overflow-hidden" style={{backgroundColor:C.bgLight,fontFamily:F.body}}>
       <style>{`@import url('https://fonts.googleapis.com/css2?family=Fredoka:wght@400;500;600;700&family=Baloo+2:wght@500;600;700&family=Nunito:wght@400;500;600;700&display=swap');`}</style>
-      <Sidebar view={view} setView={setView} open={sidebarOpen} setOpen={setSidebarOpen} synced={synced} role={role} onUnlock={handleUnlock} onLock={handleLock}/>
+      <Sidebar view={view} setView={setView} open={sidebarOpen} setOpen={setSidebarOpen} synced={synced} role={role} onUnlock={handleUnlock} onLock={handleLock} onLogout={handleLogout}/>
       <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
         {/* Mobile header */}
         <div className="md:hidden flex items-center justify-between px-4 py-3 flex-shrink-0" style={{backgroundColor:C.zenkyPurple}}>
@@ -2069,8 +2522,9 @@ export default function App(){
               {view==="reports"&&<ReportsView reports={reports} skus={skus} combos={combos}/>}
               {view==="sales-reports"&&<SalesReportsView salesLines={salesLines} skus={skus} combos={combos}/>}
               {view==="costing"&&<CostingPricingView skus={skus}/>}
-              {view==="source-data"&&<SourceDataView activityLog={activityLog} synced={synced} salesLines={salesLines} setSalesLines={setSalesLines} reports={reports} setReports={setReports} skus={skus} setSkus={setSkus} combos={combos} adminPin={adminPin} forceSaveNow={forceSaveNow} logActivity={logActivity} showToast={showToast}/>}
-              {view==="access"&&<AccessManagementView role={role} adminPin={adminPin} setAdminPin={setAdminPin} showToast={showToast} logActivity={logActivity}/>}
+              {view==="financials"&&<FinancialsView investors={investors} setInvestors={setInvestors} investments={investments} setInvestments={setInvestments} expenses={expenses} setExpenses={setExpenses} income={income} setIncome={setIncome} salesLines={salesLines} logActivity={logActivity} showToast={showToast}/>}
+              {view==="source-data"&&<SourceDataView activityLog={activityLog} synced={synced} salesLines={salesLines} setSalesLines={setSalesLines} reports={reports} setReports={setReports} skus={skus} setSkus={setSkus} combos={combos} adminPin={adminPin} loginCreds={loginCreds} investors={investors} investments={investments} expenses={expenses} income={income} forceSaveNow={forceSaveNow} logActivity={logActivity} showToast={showToast}/>}
+              {view==="access"&&<AccessManagementView role={role} adminPin={adminPin} setAdminPin={setAdminPin} loginCreds={loginCreds} setLoginCreds={setLoginCreds} showToast={showToast} logActivity={logActivity}/>}
             </>
           )}
         </main>
