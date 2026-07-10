@@ -2329,8 +2329,137 @@ function FinancialsView({investors,setInvestors,investments,setInvestments,expen
       showToast("success","Expense removed.");
       setDeleteId(null);
     }
+
+    // ── Bulk upload from Excel/CSV ──
+    const [entryMode,setEntryMode]=useState("single"); // "single" | "bulk"
+    const [bulkStage,setBulkStage]=useState("idle"); // "idle" | "preview" | "done"
+    const [bulkFileName,setBulkFileName]=useState("");
+    const [bulkRows,setBulkRows]=useState([]);
+    const bulkFileRef=useRef(null);
+
+    function downloadExpenseTemplate(){
+      const csv="date,head,amount,spentBy,paidTo,paymentMode,comment\n"+
+        "2026-05-01,Product Procurement,19991,Rahul,RHS Enterprise,Cash,Initial inventory stock\n"+
+        "2026-06-01,Packaging Expenses,350,Rahul,N/A,Cash,Packaging tape x6 rolls\n";
+      downloadCsv("expense_bulk_upload_template.csv",csv);
+    }
+
+    function processBulkFile(rows){
+      if(!rows?.length){showToast("error","File is empty.");return;}
+      const parsed=rows.map((r,i)=>{
+        const dateRaw=r.date||r.Date;
+        const headRaw=String(r.head||r.Head||"").trim();
+        const amount=Number(r.amount||r.Amount);
+        const spentByRaw=String(r.spentBy||r["Spent By"]||"").trim();
+        const paidTo=String(r.paidTo||r["Paid To"]||"").trim();
+        const paymentMode=String(r.paymentMode||r["Payment Mode"]||"").trim();
+        const comment=String(r.comment||r.Comment||"").trim();
+        // Match head case-insensitively against known heads
+        const matchedHead=EXPENSE_HEADS.find(h=>h.toLowerCase()===headRaw.toLowerCase())||"";
+        // Match spentBy against existing investors by name (case-insensitive)
+        const matchedInvestor=investors.find(inv=>inv.name.toLowerCase()===spentByRaw.toLowerCase());
+        let date="";
+        if(dateRaw instanceof Date)date=dateRaw.toISOString().slice(0,10);
+        else if(typeof dateRaw==="string"&&dateRaw){const d=new Date(dateRaw);date=isNaN(d)?"":d.toISOString().slice(0,10);}
+        return{
+          rowNum:i+2,date,head:matchedHead||headRaw,headMatched:!!matchedHead,amount,
+          spentByRaw,spentById:matchedInvestor?.id||"",spentByName:matchedInvestor?.name||"",
+          paidTo,paymentMode,comment,
+          valid:!!date&&!!matchedHead&&amount>0,
+        };
+      });
+      setBulkRows(parsed);
+      setBulkStage("preview");
+    }
+
+    function handleBulkFile(file){
+      if(!file)return;setBulkFileName(file.name);
+      const ext=file.name.split(".").pop().toLowerCase();
+      if(ext==="csv"){Papa.parse(file,{header:true,skipEmptyLines:true,complete:res=>processBulkFile(res.data),error:()=>showToast("error","Could not parse CSV.")});}
+      else if(ext==="xlsx"||ext==="xls"){const r=new FileReader();r.onload=e=>{try{const wb=XLSX.read(e.target.result,{type:"array"});processBulkFile(XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]],{defval:""}));}catch{showToast("error","Could not parse spreadsheet.");}};r.readAsArrayBuffer(file);}
+      else showToast("error","Upload a .csv or .xlsx file.");
+    }
+
+    function confirmBulkImport(){
+      const validRows=bulkRows.filter(r=>r.valid);
+      if(!validRows.length){showToast("error","No valid rows to import.");return;}
+      const newExpenses=[];const newLinkedInvestments=[];
+      validRows.forEach((r,i)=>{
+        const id=`bulk-${Date.now()}-${i}`;
+        newExpenses.push({id,date:r.date,head:r.head,amount:r.amount,spentBy:r.spentById,spentByName:r.spentByName,paidTo:r.paidTo,paymentMode:r.paymentMode,comment:r.comment});
+        if(r.spentById){
+          newLinkedInvestments.push({id:`auto-${id}`,investorId:r.spentById,investorName:r.spentByName,amount:r.amount,date:r.date,paymentMode:r.paymentMode,comment:`Covered expense: ${r.head}`,fromExpenseId:id});
+        }
+      });
+      setExpenses([...expenses,...newExpenses]);
+      if(newLinkedInvestments.length)setInvestments([...investments,...newLinkedInvestments]);
+      logActivity?.("Bulk expenses imported",`${bulkFileName}: ${newExpenses.length} expenses added, ${newLinkedInvestments.length} linked to investors`);
+      showToast("success",`Imported ${newExpenses.length} expenses. ✨`);
+      setBulkStage("done");
+    }
+
+    function resetBulk(){setBulkStage("idle");setBulkRows([]);setBulkFileName("");if(bulkFileRef.current)bulkFileRef.current.value="";}
+
     return(
       <div>
+        <div className="flex gap-1.5 mb-4">
+          {[{id:"single",label:"Add Single Expense"},{id:"bulk",label:"Bulk Upload from Excel"}].map(m=>(
+            <button key={m.id} onClick={()=>{setEntryMode(m.id);resetBulk();}} className="px-3.5 py-1.5 rounded-full text-xs font-bold transition-colors" style={{backgroundColor:entryMode===m.id?C.bgLight:"transparent",color:entryMode===m.id?C.zenkyPurple:C.lightText,border:`1.5px solid ${entryMode===m.id?C.zenkyPurple:C.border}`,fontFamily:F.body}}>
+              {m.label}
+            </button>
+          ))}
+        </div>
+
+        {entryMode==="bulk"&&(
+          <Card className="mb-6">
+            <h3 className="font-bold text-lg mb-2" style={{fontFamily:F.display,color:C.darkText}}>Bulk Upload Expenses</h3>
+            <p className="text-xs mb-4" style={{color:C.lightText}}>Columns expected: date, head, amount, spentBy, paidTo, paymentMode, comment. "head" must match one of the expense heads exactly (case-insensitive); "spentBy" matches an existing investor by name.</p>
+            <button onClick={downloadExpenseTemplate} className="inline-flex items-center gap-1.5 text-xs font-bold mb-4" style={{color:C.zenkyOrange,fontFamily:F.body}}><Download size={13}/>Download Template</button>
+
+            {bulkStage==="idle"&&(
+              <div className="rounded-2xl border-2 border-dashed p-8 text-center" style={{borderColor:C.zenkyPink,backgroundColor:"#FFF8FC"}}>
+                <Upload size={28} className="mx-auto mb-3" style={{color:C.zenkyPink}}/>
+                <p className="font-bold mb-4 text-sm" style={{color:C.darkText,fontFamily:F.display}}>Choose your expense file</p>
+                <input ref={bulkFileRef} type="file" accept=".csv,.xlsx,.xls" className="hidden" onChange={e=>handleBulkFile(e.target.files[0])}/>
+                <PrimaryButton onClick={()=>bulkFileRef.current?.click()}><Upload size={15}/>Select File</PrimaryButton>
+              </div>
+            )}
+
+            {bulkStage==="preview"&&(
+              <div>
+                <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
+                  <span className="text-sm" style={{color:C.darkText}}>Parsed <strong>{bulkFileName}</strong> — {bulkRows.length} rows, {bulkRows.filter(r=>r.valid).length} valid</span>
+                  <button onClick={resetBulk} className="text-sm font-bold" style={{color:C.lightText}}>Change file</button>
+                </div>
+                <div className="overflow-x-auto mb-4 max-h-96 overflow-y-auto"><table className="w-full text-xs">
+                  <thead><tr style={{color:C.lightText}}><th className="py-2 pr-3 text-left font-bold uppercase">Row</th><th className="py-2 pr-3 text-left font-bold uppercase">Date</th><th className="py-2 pr-3 text-left font-bold uppercase">Head</th><th className="py-2 pr-3 text-left font-bold uppercase">Amount</th><th className="py-2 pr-3 text-left font-bold uppercase">Spent By</th><th className="py-2 pr-3 text-left font-bold uppercase">Status</th></tr></thead>
+                  <tbody>{bulkRows.map(r=>(
+                    <tr key={r.rowNum} className="border-t" style={{borderColor:C.border}}>
+                      <td className="py-1.5 pr-3" style={{fontFamily:F.mono,color:C.lightText}}>{r.rowNum}</td>
+                      <td className="py-1.5 pr-3" style={{fontFamily:F.mono,color:r.date?C.darkText:C.zenkyPink}}>{r.date||"missing"}</td>
+                      <td className="py-1.5 pr-3" style={{color:r.headMatched?C.darkText:C.zenkyPink}}>{r.head||"missing"}{!r.headMatched&&r.head&&" (no match)"}</td>
+                      <td className="py-1.5 pr-3" style={{fontFamily:F.mono,color:r.amount>0?C.darkText:C.zenkyPink}}>{r.amount||"missing"}</td>
+                      <td className="py-1.5 pr-3">{r.spentByName||(r.spentByRaw?<span style={{color:C.zenkyOrange}}>{r.spentByRaw} (no match)</span>:"—")}</td>
+                      <td className="py-1.5 pr-3">{r.valid?<Stamp tone="mint">Ready</Stamp>:<Stamp tone="pink">Skip</Stamp>}</td>
+                    </tr>
+                  ))}</tbody>
+                </table></div>
+                {bulkRows.some(r=>!r.valid)&&<p className="text-xs mb-3" style={{color:C.zenkyPink}}>Rows marked "Skip" are missing a date, valid amount, or matching head — they won't be imported. Fix and re-upload, or import the valid ones now and add the rest manually.</p>}
+                <div className="flex gap-2"><PrimaryButton onClick={confirmBulkImport}><Check size={15}/>Import {bulkRows.filter(r=>r.valid).length} Valid Expenses</PrimaryButton><button onClick={resetBulk} className="text-sm font-bold" style={{color:C.lightText}}>Cancel</button></div>
+              </div>
+            )}
+
+            {bulkStage==="done"&&(
+              <div className="text-center py-6">
+                <Check size={28} className="mx-auto mb-3" style={{color:C.mintGreen}}/>
+                <p className="font-bold" style={{color:C.darkText,fontFamily:F.display}}>Import complete!</p>
+                <div className="mt-4"><PrimaryButton onClick={resetBulk}><Upload size={15}/>Upload another file</PrimaryButton></div>
+              </div>
+            )}
+          </Card>
+        )}
+
+        {entryMode==="single"&&(
         <Card className="mb-6">
           <h3 className="font-bold text-lg mb-4" style={{fontFamily:F.display,color:C.darkText}}>Add an Expense</h3>
           <div className="grid sm:grid-cols-3 gap-2 mb-2">
@@ -2358,6 +2487,7 @@ function FinancialsView({investors,setInvestors,investments,setInvestments,expen
           {investors.length===0&&<p className="text-xs mb-3" style={{color:C.lightText}}>Tip: add people to Investor Master first so you can pick who's accountable for each expense.</p>}
           <PrimaryButton onClick={add}><Plus size={16}/>Add Expense</PrimaryButton>
         </Card>
+        )}
         <Card>
           <div className="flex items-center justify-between mb-4">
             <h3 className="font-bold text-lg" style={{fontFamily:F.display,color:C.darkText}}>{expenses.length} Expense{expenses.length!==1?"s":""}</h3>
