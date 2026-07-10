@@ -1665,6 +1665,35 @@ function SourceDataView({activityLog,synced,salesLines,setSalesLines,reports,set
   const [confirmText,setConfirmText]=useState("");
   const [showConfirm,setShowConfirm]=useState(false);
 
+  // Full off-platform backup — a plain JSON file downloaded to this device.
+  // This is the ONLY backup layer that survives a whole-project deletion in
+  // Supabase, since it lives entirely outside the database. Everything else
+  // (in-database snapshots via pg_cron) is destroyed along with the project
+  // if the project itself is ever deleted.
+  function downloadFullBackup(){
+    const backup={
+      exportedAt:new Date().toISOString(),
+      skus,combos,reports,salesLines,activityLog,
+      investors,investments,expenses,income,
+      // adminPin/loginCreds deliberately excluded from the downloadable file —
+      // don't want credentials sitting in a file that could end up anywhere.
+    };
+    const json=JSON.stringify(backup,null,2);
+    const blob=new Blob([json],{type:"application/json"});
+    const url=URL.createObjectURL(blob);
+    const a=document.createElement("a");
+    const dateStr=new Date().toISOString().slice(0,10);
+    a.href=url;a.download=`zenkybox_backup_${dateStr}.json`;
+    document.body.appendChild(a);a.click();document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    logActivity?.("Downloaded full backup",`${skus.length} SKUs, ${combos.length} combos, ${salesLines.length} sale lines, ${investors.length} investors`);
+    showToast("success","Backup downloaded. Keep this file somewhere safe outside Supabase. 💾");
+    if(typeof window!=="undefined")localStorage.setItem("zenkybox-last-backup",new Date().toISOString());
+  }
+
+  const lastBackup=typeof window!=="undefined"?localStorage.getItem("zenkybox-last-backup"):null;
+  const daysSinceBackup=lastBackup?Math.floor((Date.now()-new Date(lastBackup).getTime())/86400000):null;
+
   function exportLog(){
     let csv="Date,Action,Detail,Role\n";
     activityLog.forEach(a=>csv+=`${a.date},"${a.action}","${a.detail||""}",${a.role}\n`);
@@ -1765,6 +1794,28 @@ function SourceDataView({activityLog,synced,salesLines,setSalesLines,reports,set
             No database connected — data is stored in this browser's local storage only (not synced across devices). See SUPABASE_SETUP.md to connect a free cross-device database.
           </div>
         )}
+      </Card>
+
+      <Card className="mb-6" style={{borderColor:daysSinceBackup>7?"#fecaca":C.border}}>
+        <div className="flex items-center gap-2 mb-3">
+          <Download size={18} style={{color:C.zenkyPurple}}/>
+          <h3 className="font-bold text-lg" style={{fontFamily:F.display,color:C.darkText}}>Download Full Backup</h3>
+        </div>
+        <p className="text-sm mb-3" style={{color:C.darkText,fontFamily:F.body}}>
+          Downloads everything — SKUs, combos, sales history, investors, expenses, income — as one JSON file to this device. This is the only backup that survives if the Supabase project itself is ever deleted, since it lives completely outside Supabase.
+        </p>
+        {lastBackup?(
+          <p className="text-xs mb-3" style={{color:daysSinceBackup>7?"#dc2626":C.lightText,fontWeight:daysSinceBackup>7?700:400}}>
+            Last backup: {daysSinceBackup===0?"today":`${daysSinceBackup} day${daysSinceBackup!==1?"s":""} ago`}
+            {daysSinceBackup>7&&" — overdue, download a fresh one now"}
+          </p>
+        ):(
+          <p className="text-xs mb-3" style={{color:"#dc2626",fontWeight:700}}>No backup has ever been downloaded on this device.</p>
+        )}
+        <PrimaryButton onClick={downloadFullBackup}><Download size={15}/>Download Backup Now</PrimaryButton>
+        <p className="text-xs mt-3" style={{color:C.lightText}}>
+          Recommended: download one every 7 days, and store it somewhere outside Supabase/Vercel entirely — email it to yourself, save to Google Drive, or a folder on your computer.
+        </p>
       </Card>
 
       <Card className="mb-6">
