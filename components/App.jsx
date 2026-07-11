@@ -104,6 +104,13 @@ function generateSkuCode(existingSkus){
 const MONTH_NAMES=["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
 
 function monthKey(d){const dt=new Date(d);return isNaN(dt)?"Unknown":`${MONTH_NAMES[dt.getMonth()]} ${dt.getFullYear()}`;}
+/* Indian Financial Year: 1 April – 31 March. e.g. a date in Feb 2027 falls in "FY 2026-27". */
+function fyLabel(d){
+  const dt=new Date(d);if(isNaN(dt))return"Unknown";
+  const y=dt.getFullYear(),m=dt.getMonth(); // month 3 = April (0-indexed)
+  const startYear=m>=3?y:y-1;
+  return`FY ${startYear}-${String(startYear+1).slice(-2)}`;
+}
 function weekKey(d){
   const dt=new Date(d);if(isNaN(dt))return"Unknown";
   const start=new Date(dt);start.setDate(dt.getDate()-dt.getDay()); // Sunday start
@@ -2007,21 +2014,6 @@ function AccessManagementView({role,adminPin,setAdminPin,loginCreds,setLoginCred
 
 /* ═══ FINANCIALS ═══ */
 function FinancialsView({investors,setInvestors,investments,setInvestments,expenses,setExpenses,income,setIncome,salesLines,skus,combos,reports,activityLog,adminPin,loginCreds,forceSaveNow,logActivity,showToast}){
-  const [showResetConfirm,setShowResetConfirm]=useState(false);
-  const [resetConfirmText,setResetConfirmText]=useState("");
-
-  function resetAllFinancials(){
-    if(resetConfirmText.trim().toUpperCase()!=="RESET"){showToast("error",'Type "RESET" exactly to confirm.');return;}
-    const counts={investors:investors.length,investments:investments.length,expenses:expenses.length,income:income.length};
-    const newActivityLog=[{id:Date.now().toString()+Math.random(),date:new Date().toISOString(),action:"Reset all financial data",detail:`Cleared ${counts.investors} investors, ${counts.investments} investments, ${counts.expenses} expenses, ${counts.income} income entries`,role:"admin"},...activityLog].slice(0,300);
-    setInvestors([]);setInvestments([]);setExpenses([]);setIncome([]);
-    logActivity?.("Reset all financial data",`Cleared ${counts.investors} investors, ${counts.investments} investments, ${counts.expenses} expenses, ${counts.income} income entries`);
-    // Write immediately rather than waiting on the debounce — same fix as the
-    // Sales Data flush, closing the window where a stale tab could resave old data.
-    forceSaveNow?.({skus,combos,reports,salesLines,activityLog:newActivityLog,adminPin,loginCreds,investors:[],investments:[],expenses:[],income:[]});
-    showToast("success","All financial data reset. 🗑️");
-    setShowResetConfirm(false);setResetConfirmText("");
-  }
 
   const [tab,setTab]=useState("overview");
   const TABS=[
@@ -2031,6 +2023,28 @@ function FinancialsView({investors,setInvestors,investments,setInvestments,expen
     {id:"income",label:"Income"},
     {id:"reports",label:"Reports"},
   ];
+
+  // Dedicated financial-data-only backup — separate from the full app backup
+  // in Source Data. This one matters more to track closely: unlike SKU/Combo
+  // data (which can be re-imported from an Excel file if lost), investors,
+  // expenses, and income are entered by hand with no separate source file to
+  // fall back on, so losing them means genuinely re-entering everything.
+  function downloadFinancialBackup(){
+    const backup={exportedAt:new Date().toISOString(),investors,investments,expenses,income};
+    const json=JSON.stringify(backup,null,2);
+    const blob=new Blob([json],{type:"application/json"});
+    const url=URL.createObjectURL(blob);
+    const a=document.createElement("a");
+    const dateStr=new Date().toISOString().slice(0,10);
+    a.href=url;a.download=`zenkybox_financial_backup_${dateStr}.json`;
+    document.body.appendChild(a);a.click();document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    logActivity?.("Downloaded financial backup",`${investors.length} investors, ${investments.length} investments, ${expenses.length} expenses, ${income.length} income entries`);
+    showToast("success","Financial backup downloaded. Keep it somewhere safe outside Supabase. 💾");
+    if(typeof window!=="undefined")localStorage.setItem("zenkybox-last-financial-backup",new Date().toISOString());
+  }
+  const lastFinBackup=typeof window!=="undefined"?localStorage.getItem("zenkybox-last-financial-backup"):null;
+  const daysSinceFinBackup=lastFinBackup?Math.floor((Date.now()-new Date(lastFinBackup).getTime())/86400000):null;
 
   const totalInvested=useMemo(()=>investments.reduce((s,i)=>s+Number(i.amount||0),0),[investments]);
   const totalIncome=useMemo(()=>income.reduce((s,i)=>s+Number(i.amount||0),0),[income]);
@@ -2055,6 +2069,25 @@ function FinancialsView({investors,setInvestors,investments,setInvestments,expen
     },[]);
     return(
       <div>
+        <Card className="mb-6" style={{borderColor:daysSinceFinBackup>7?"#fecaca":C.zenkyPurple}}>
+          <div className="flex items-center gap-2 mb-3">
+            <Download size={18} style={{color:C.zenkyPurple}}/>
+            <h3 className="font-bold text-lg" style={{fontFamily:F.display,color:C.darkText}}>Financial Data Backup</h3>
+          </div>
+          <p className="text-sm mb-3" style={{color:C.darkText,fontFamily:F.body}}>
+            Downloads your investors, investments, expenses, and income as a JSON file. Unlike your SKU Catalog (which you can always re-import from an Excel file), this data is entered by hand — losing it means starting over. Back it up weekly.
+          </p>
+          {lastFinBackup?(
+            <p className="text-xs mb-3" style={{color:daysSinceFinBackup>7?"#dc2626":C.lightText,fontWeight:daysSinceFinBackup>7?700:400}}>
+              Last backup: {daysSinceFinBackup===0?"today":`${daysSinceFinBackup} day${daysSinceFinBackup!==1?"s":""} ago`}
+              {daysSinceFinBackup>7&&" — overdue, download a fresh one now"}
+            </p>
+          ):(
+            <p className="text-xs mb-3" style={{color:"#dc2626",fontWeight:700}}>No financial backup has ever been downloaded on this device.</p>
+          )}
+          <PrimaryButton onClick={downloadFinancialBackup}><Download size={15}/>Download Financial Backup Now</PrimaryButton>
+          <p className="text-xs mt-3" style={{color:C.lightText}}>Store it outside Supabase/Vercel — Google Drive, email to yourself, or a folder on your computer.</p>
+        </Card>
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-6">
           <Card><div className="text-xs font-bold uppercase" style={{color:C.lightText}}>Total Invested</div><div className="text-2xl font-black mt-1" style={{fontFamily:F.display,color:C.zenkyPurple}}>{fmtINR(totalInvested)}</div></Card>
           <Card><div className="text-xs font-bold uppercase" style={{color:C.lightText}}>Total Income</div><div className="text-2xl font-black mt-1" style={{fontFamily:F.display,color:C.mintGreen}}>{fmtINR(totalIncome)}</div></Card>
@@ -2076,30 +2109,6 @@ function FinancialsView({investors,setInvestors,investments,setInvestments,expen
                 </tr>
               ))}</tbody>
             </table></div>
-          )}
-        </Card>
-
-        <Card className="mt-6" style={{borderColor:"#fecaca"}}>
-          <div className="flex items-center gap-2 mb-3">
-            <Trash2 size={18} style={{color:"#dc2626"}}/>
-            <h3 className="font-bold text-lg" style={{fontFamily:F.display,color:"#991b1b"}}>Reset All Financial Data</h3>
-          </div>
-          <p className="text-sm mb-4" style={{color:C.darkText,fontFamily:F.body}}>
-            Clears every investor, investment, expense, and income entry — a clean slate for the Financials module only. Your SKU Catalog, Combos, and Sales Report are completely untouched.
-          </p>
-          {!showResetConfirm?(
-            <button onClick={()=>setShowResetConfirm(true)} className="inline-flex items-center gap-2 px-4 py-2.5 rounded-full text-sm font-bold text-white" style={{backgroundColor:"#dc2626",fontFamily:F.display}}>
-              <Trash2 size={15}/>Reset Financial Data
-            </button>
-          ):(
-            <div className="p-3.5 rounded-xl" style={{backgroundColor:"#fff5f5",border:"2px solid #fecaca"}}>
-              <p className="font-bold text-sm mb-2" style={{color:"#991b1b",fontFamily:F.display}}>This cannot be undone. Type "RESET" to confirm.</p>
-              <div className="flex items-center gap-2 flex-wrap">
-                <Input placeholder='Type "RESET" to confirm' value={resetConfirmText} onChange={e=>setResetConfirmText(e.target.value)} className="max-w-xs" style={{borderColor:"#fecaca"}}/>
-                <button onClick={resetAllFinancials} className="px-4 py-2.5 rounded-xl text-sm font-bold text-white" style={{backgroundColor:"#dc2626",fontFamily:F.display}}>Confirm Reset</button>
-                <button onClick={()=>{setShowResetConfirm(false);setResetConfirmText("");}} className="text-sm font-bold" style={{color:C.lightText,fontFamily:F.body}}>Cancel</button>
-              </div>
-            </div>
           )}
         </Card>
       </div>
@@ -2621,6 +2630,227 @@ function FinancialsView({investors,setInvestors,investments,setInvestments,expen
 
   /* ── Reports (month-over-month) ── */
   function Reports(){
+    const [reportTab,setReportTab]=useState("pl");
+    const REPORT_TABS=[
+      {id:"pl",label:"P&L Statement"},
+      {id:"datewise",label:"Date-wise Ledger"},
+      {id:"fy",label:"Financial Year"},
+      {id:"monthly",label:"Monthly"},
+    ];
+
+    // ── Shared: product/combo revenue+COGS, sourced from Sales Report data (salesLines) ──
+    function productCombobreakdown(lines){
+      const bySku={},byCombo={};
+      lines.forEach(l=>{
+        const bucket=l.matchType==="combo"?byCombo:bySku;
+        if(!bucket[l.sku])bucket[l.sku]={code:l.sku,name:l.name,qty:0,revenue:0,cogs:0};
+        bucket[l.sku].qty+=l.qty;bucket[l.sku].revenue+=l.revenue;bucket[l.sku].cogs+=l.cost;
+      });
+      return{skuRows:Object.values(bySku).sort((a,b)=>b.revenue-a.revenue),comboRows:Object.values(byCombo).sort((a,b)=>b.revenue-a.revenue)};
+    }
+
+    // Operating expenses exclude "Product Procurement" — that cost is already
+    // reflected as COGS against units actually SOLD (via each SKU's procurement
+    // cost in Sales Report). Counting the same rupees again here as an operating
+    // expense would double-count it. Procurement is instead shown separately as
+    // a cash-outflow reference, since buying inventory IS real money leaving the
+    // business, just not a same-period "expense" in the profitability sense.
+    const PROCUREMENT_HEAD="Product Procurement";
+    // "Income from Amazon"/"Income from Website" are excluded from Other Income
+    // for the same reason: that revenue is already counted via Sales Report.
+    const SALES_INCOME_HEADS=["Income from Amazon","Income from Website"];
+
+    function plFor(lines,expenseList,incomeList){
+      const{skuRows,comboRows}=productCombobreakdown(lines);
+      const totalRevenue=lines.reduce((s,l)=>s+l.revenue,0);
+      const totalCOGS=lines.reduce((s,l)=>s+l.cost,0);
+      const grossProfit=totalRevenue-totalCOGS;
+      const opExByHead={};let totalOpEx=0,procurementTotal=0;
+      expenseList.forEach(e=>{
+        const amt=Number(e.amount||0);
+        if(e.head===PROCUREMENT_HEAD){procurementTotal+=amt;return;}
+        opExByHead[e.head]=(opExByHead[e.head]||0)+amt;totalOpEx+=amt;
+      });
+      const otherIncomeByHead={};let totalOtherIncome=0;
+      incomeList.forEach(i=>{
+        if(SALES_INCOME_HEADS.includes(i.head))return;
+        const amt=Number(i.amount||0);
+        otherIncomeByHead[i.head]=(otherIncomeByHead[i.head]||0)+amt;totalOtherIncome+=amt;
+      });
+      const netProfit=grossProfit-totalOpEx+totalOtherIncome;
+      return{skuRows,comboRows,totalRevenue,totalCOGS,grossProfit,opExByHead,totalOpEx,procurementTotal,otherIncomeByHead,totalOtherIncome,netProfit};
+    }
+
+    const overallPL=useMemo(()=>plFor(salesLines,expenses,income),[]);
+
+    function exportPL(pl,label){
+      let csv=`Profit & Loss Statement — ${label}\n\n`;
+      csv+="REVENUE BY PRODUCT (SKU)\nCode,Name,Qty,Revenue,COGS,Gross Profit\n";
+      pl.skuRows.forEach(r=>csv+=`${r.code},"${r.name}",${r.qty},${r.revenue.toFixed(2)},${r.cogs.toFixed(2)},${(r.revenue-r.cogs).toFixed(2)}\n`);
+      csv+="\nREVENUE BY COMBO\nCode,Name,Qty,Revenue,COGS,Gross Profit\n";
+      pl.comboRows.forEach(r=>csv+=`${r.code},"${r.name}",${r.qty},${r.revenue.toFixed(2)},${r.cogs.toFixed(2)},${(r.revenue-r.cogs).toFixed(2)}\n`);
+      csv+=`\nTOTAL REVENUE,${pl.totalRevenue.toFixed(2)}\nTOTAL COGS,${pl.totalCOGS.toFixed(2)}\nGROSS PROFIT,${pl.grossProfit.toFixed(2)}\n`;
+      csv+="\nOPERATING EXPENSES\nHead,Amount\n";
+      Object.entries(pl.opExByHead).forEach(([h,a])=>csv+=`"${h}",${a.toFixed(2)}\n`);
+      csv+=`TOTAL OPERATING EXPENSES,${pl.totalOpEx.toFixed(2)}\n`;
+      csv+=`\nInventory Purchases (Product Procurement — cash outflow, excluded from Net Profit as it's already counted via COGS),${pl.procurementTotal.toFixed(2)}\n`;
+      csv+="\nOTHER INCOME (excludes Amazon/Website — already in Revenue)\nHead,Amount\n";
+      Object.entries(pl.otherIncomeByHead).forEach(([h,a])=>csv+=`"${h}",${a.toFixed(2)}\n`);
+      csv+=`TOTAL OTHER INCOME,${pl.totalOtherIncome.toFixed(2)}\n`;
+      csv+=`\nNET PROFIT / LOSS,${pl.netProfit.toFixed(2)}\n`;
+      downloadCsv(`PL_Statement_${label.replace(/\s+/g,"_")}.csv`,csv);
+    }
+
+    function PLView({pl,label}){
+      return(
+        <div>
+          <div className="mb-4 p-3 rounded-xl text-xs" style={{backgroundColor:C.bgLight,color:C.lightText}}>
+            <strong>How this is calculated (plain English):</strong> Revenue and product cost (COGS) come from your Sales Report — what was actually sold. Gross Profit = Revenue − COGS. Operating Expenses are everything you've logged in Expenses <em>except</em> "Product Procurement" — that's excluded here because it's already counted as COGS against units sold (counting it twice would understate your real profit). Other Income excludes "Income from Amazon/Website" since that revenue is already in Sales Report. Net Profit = Gross Profit − Operating Expenses + Other Income.
+          </div>
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-6">
+            <Card><div className="text-xs font-bold uppercase" style={{color:C.lightText}}>Revenue</div><div className="text-xl font-black mt-1" style={{fontFamily:F.display,color:C.zenkyPurple}}>{fmtINR(pl.totalRevenue)}</div></Card>
+            <Card><div className="text-xs font-bold uppercase" style={{color:C.lightText}}>COGS</div><div className="text-xl font-black mt-1" style={{fontFamily:F.display,color:C.zenkyOrange}}>{fmtINR(pl.totalCOGS)}</div></Card>
+            <Card><div className="text-xs font-bold uppercase" style={{color:C.lightText}}>Gross Profit</div><div className="text-xl font-black mt-1" style={{fontFamily:F.display,color:pl.grossProfit>=0?C.mintGreen:C.zenkyPink}}>{fmtINR(pl.grossProfit)}</div></Card>
+            <Card style={{borderColor:pl.netProfit>=0?C.mintGreen:C.zenkyPink}}><div className="text-xs font-bold uppercase" style={{color:C.lightText}}>Net Profit</div><div className="text-xl font-black mt-1" style={{fontFamily:F.display,color:pl.netProfit>=0?C.mintGreen:C.zenkyPink}}>{fmtINR(pl.netProfit)}</div></Card>
+          </div>
+
+          <Card className="mb-4">
+            <div className="flex items-center justify-between mb-3"><h3 className="font-bold text-lg" style={{fontFamily:F.display,color:C.darkText}}>Revenue by Product & Combo</h3><button onClick={()=>exportPL(pl,label)} className="inline-flex items-center gap-1 text-xs font-bold" style={{color:C.zenkyOrange}}><Download size={13}/>Export Full P&L</button></div>
+            {pl.skuRows.length>0&&<>
+              <div className="text-xs font-bold uppercase mb-2" style={{color:C.lightText}}>SKUs</div>
+              <div className="overflow-x-auto mb-4"><table className="w-full text-sm">
+                <thead><tr style={{color:C.lightText}}><th className="py-1.5 pr-3 text-left text-xs uppercase font-bold">Code</th><th className="py-1.5 pr-3 text-left text-xs uppercase font-bold">Name</th><th className="py-1.5 pr-3 text-left text-xs uppercase font-bold">Qty</th><th className="py-1.5 pr-3 text-left text-xs uppercase font-bold">Revenue</th><th className="py-1.5 pr-3 text-left text-xs uppercase font-bold">COGS</th><th className="py-1.5 pr-3 text-left text-xs uppercase font-bold">Gross Profit</th></tr></thead>
+                <tbody>{pl.skuRows.map(r=>(<tr key={r.code} className="border-t" style={{borderColor:C.border}}><td className="py-1.5 pr-3" style={{fontFamily:F.mono,fontWeight:600}}>{r.code}</td><td className="py-1.5 pr-3">{r.name}</td><td className="py-1.5 pr-3" style={{fontFamily:F.mono}}>{fmt(r.qty)}</td><td className="py-1.5 pr-3" style={{fontFamily:F.mono}}>{fmtINR(r.revenue)}</td><td className="py-1.5 pr-3" style={{fontFamily:F.mono}}>{fmtINR(r.cogs)}</td><td className="py-1.5 pr-3 font-bold" style={{fontFamily:F.mono,color:C.mintGreen}}>{fmtINR(r.revenue-r.cogs)}</td></tr>))}</tbody>
+              </table></div>
+            </>}
+            {pl.comboRows.length>0&&<>
+              <div className="text-xs font-bold uppercase mb-2" style={{color:C.lightText}}>Combos</div>
+              <div className="overflow-x-auto"><table className="w-full text-sm">
+                <thead><tr style={{color:C.lightText}}><th className="py-1.5 pr-3 text-left text-xs uppercase font-bold">Code</th><th className="py-1.5 pr-3 text-left text-xs uppercase font-bold">Name</th><th className="py-1.5 pr-3 text-left text-xs uppercase font-bold">Qty</th><th className="py-1.5 pr-3 text-left text-xs uppercase font-bold">Revenue</th><th className="py-1.5 pr-3 text-left text-xs uppercase font-bold">COGS</th><th className="py-1.5 pr-3 text-left text-xs uppercase font-bold">Gross Profit</th></tr></thead>
+                <tbody>{pl.comboRows.map(r=>(<tr key={r.code} className="border-t" style={{borderColor:C.border}}><td className="py-1.5 pr-3" style={{fontFamily:F.mono,fontWeight:600}}>{r.code}</td><td className="py-1.5 pr-3">{r.name}</td><td className="py-1.5 pr-3" style={{fontFamily:F.mono}}>{fmt(r.qty)}</td><td className="py-1.5 pr-3" style={{fontFamily:F.mono}}>{fmtINR(r.revenue)}</td><td className="py-1.5 pr-3" style={{fontFamily:F.mono}}>{fmtINR(r.cogs)}</td><td className="py-1.5 pr-3 font-bold" style={{fontFamily:F.mono,color:C.mintGreen}}>{fmtINR(r.revenue-r.cogs)}</td></tr>))}</tbody>
+              </table></div>
+            </>}
+            {pl.skuRows.length===0&&pl.comboRows.length===0&&<p className="text-sm" style={{color:C.lightText}}>No sales recorded for this period.</p>}
+          </Card>
+
+          <Card className="mb-4">
+            <h3 className="font-bold text-lg mb-3" style={{fontFamily:F.display,color:C.darkText}}>Operating Expenses</h3>
+            {Object.keys(pl.opExByHead).length===0?<p className="text-sm" style={{color:C.lightText}}>None logged.</p>:(
+              <div className="space-y-1">
+                {Object.entries(pl.opExByHead).sort((a,b)=>b[1]-a[1]).map(([h,a])=>(
+                  <div key={h} className="flex justify-between text-sm py-1 border-t" style={{borderColor:C.border}}><span>{h}</span><span className="font-bold" style={{fontFamily:F.mono,color:C.zenkyOrange}}>{fmtINR(a)}</span></div>
+                ))}
+                <div className="flex justify-between text-sm pt-2 font-bold" style={{borderTop:`2px solid ${C.border}`}}><span>Total Operating Expenses</span><span style={{fontFamily:F.mono,color:C.zenkyOrange}}>{fmtINR(pl.totalOpEx)}</span></div>
+              </div>
+            )}
+            {pl.procurementTotal>0&&<p className="text-xs mt-3 p-2.5 rounded-lg" style={{backgroundColor:C.bgLight,color:C.lightText}}>Inventory Purchases (Product Procurement): <strong>{fmtINR(pl.procurementTotal)}</strong> — real cash spent buying stock, but not included in Net Profit above since it's already reflected as COGS against units sold.</p>}
+          </Card>
+
+          <Card>
+            <h3 className="font-bold text-lg mb-3" style={{fontFamily:F.display,color:C.darkText}}>Other Income</h3>
+            {Object.keys(pl.otherIncomeByHead).length===0?<p className="text-sm" style={{color:C.lightText}}>None logged.</p>:(
+              <div className="space-y-1">
+                {Object.entries(pl.otherIncomeByHead).map(([h,a])=>(
+                  <div key={h} className="flex justify-between text-sm py-1 border-t" style={{borderColor:C.border}}><span>{h}</span><span className="font-bold" style={{fontFamily:F.mono,color:C.mintGreen}}>{fmtINR(a)}</span></div>
+                ))}
+              </div>
+            )}
+          </Card>
+        </div>
+      );
+    }
+
+    // ── Date-wise Ledger (Cash Book style) ──
+    function DateWiseLedger(){
+      const [fromDate,setFromDate]=useState("");
+      const [toDate,setToDate]=useState("");
+      const entries=useMemo(()=>{
+        const all=[
+          ...investments.map(i=>({date:i.date,desc:`Investment — ${i.investorName}`,in:Number(i.amount||0),out:0})),
+          ...income.map(i=>({date:i.date,desc:`Income — ${i.head}${i.receivedFrom?` (from ${i.receivedFrom})`:""}`,in:Number(i.amount||0),out:0})),
+          ...expenses.map(e=>({date:e.date,desc:`Expense — ${e.head}${e.paidTo?` (to ${e.paidTo})`:""}`,in:0,out:Number(e.amount||0)})),
+        ].filter(e=>e.date);
+        return all.sort((a,b)=>new Date(a.date)-new Date(b.date));
+      },[]);
+      const filtered=entries.filter(e=>(!fromDate||e.date>=fromDate)&&(!toDate||e.date<=toDate));
+      let running=0;
+      const withBalance=filtered.map(e=>{running+=e.in-e.out;return{...e,balance:running};});
+
+      function exportLedger(){
+        let csv="Date,Description,Money In,Money Out,Balance\n";
+        withBalance.forEach(e=>csv+=`${e.date},"${e.desc}",${e.in.toFixed(2)},${e.out.toFixed(2)},${e.balance.toFixed(2)}\n`);
+        downloadCsv("date_wise_ledger.csv",csv);
+      }
+
+      return(
+        <div>
+          <div className="mb-4 p-3 rounded-xl text-xs" style={{backgroundColor:C.bgLight,color:C.lightText}}>
+            <strong>What this shows:</strong> every investment, income entry, and expense in date order with a running balance — like a cash book. This tracks actual money in/out as you've logged it, not accrual-based sales revenue (see P&L Statement for that).
+          </div>
+          <div className="flex flex-wrap items-end gap-2 mb-4">
+            <div><label className="text-xs font-bold uppercase block mb-1" style={{color:C.lightText}}>From</label><Input type="date" value={fromDate} onChange={e=>setFromDate(e.target.value)}/></div>
+            <div><label className="text-xs font-bold uppercase block mb-1" style={{color:C.lightText}}>To</label><Input type="date" value={toDate} onChange={e=>setToDate(e.target.value)}/></div>
+            {(fromDate||toDate)&&<button onClick={()=>{setFromDate("");setToDate("");}} className="text-xs font-bold" style={{color:C.lightText}}>Clear filter</button>}
+            <div className="flex-1"/>
+            {withBalance.length>0&&<button onClick={exportLedger} className="inline-flex items-center gap-1 text-xs font-bold" style={{color:C.zenkyOrange}}><Download size={13}/>Export</button>}
+          </div>
+          {withBalance.length===0?<Empty icon={Calendar} title="No entries in this range" message="Add investments, income, or expenses, or widen the date filter."/>:(
+            <Card>
+              <div className="overflow-x-auto"><table className="w-full text-sm">
+                <thead><tr style={{color:C.lightText}}><th className="py-2 pr-3 text-left text-xs uppercase font-bold">Date</th><th className="py-2 pr-3 text-left text-xs uppercase font-bold">Description</th><th className="py-2 pr-3 text-left text-xs uppercase font-bold">In</th><th className="py-2 pr-3 text-left text-xs uppercase font-bold">Out</th><th className="py-2 pr-3 text-left text-xs uppercase font-bold">Balance</th></tr></thead>
+                <tbody>{withBalance.map((e,i)=>(
+                  <tr key={i} className="border-t" style={{borderColor:C.border}}>
+                    <td className="py-2 pr-3" style={{fontFamily:F.mono,color:C.lightText}}>{e.date}</td>
+                    <td className="py-2 pr-3">{e.desc}</td>
+                    <td className="py-2 pr-3" style={{fontFamily:F.mono,color:e.in?C.mintGreen:C.lightText}}>{e.in?fmtINR(e.in):"—"}</td>
+                    <td className="py-2 pr-3" style={{fontFamily:F.mono,color:e.out?C.zenkyOrange:C.lightText}}>{e.out?fmtINR(e.out):"—"}</td>
+                    <td className="py-2 pr-3 font-bold" style={{fontFamily:F.mono,color:e.balance>=0?C.zenkyPurple:C.zenkyPink}}>{fmtINR(e.balance)}</td>
+                  </tr>
+                ))}</tbody>
+              </table></div>
+            </Card>
+          )}
+        </div>
+      );
+    }
+
+    // ── Financial Year-wise ──
+    function FinancialYearView(){
+      const fyGroups=useMemo(()=>{
+        const fys=new Set();
+        salesLines.forEach(l=>fys.add(fyLabel(l.date)));
+        expenses.forEach(e=>fys.add(fyLabel(e.date)));
+        income.forEach(i=>fys.add(fyLabel(i.date)));
+        return Array.from(fys).filter(f=>f!=="Unknown").sort();
+      },[]);
+      if(!fyGroups.length)return<Empty icon={IndianRupee} title="No data yet" message="Add sales, income, or expenses to see financial-year reports."/>;
+      return(
+        <div>
+          <div className="mb-4 p-3 rounded-xl text-xs" style={{backgroundColor:"#FFF3E6",color:"#9a5b0f"}}>
+            Indian Financial Year runs 1 April – 31 March. This is for your own tracking — not a substitute for filing with a CA or tax advisor.
+          </div>
+          <div className="space-y-6">
+            {fyGroups.map(fy=>{
+              const fyLines=salesLines.filter(l=>fyLabel(l.date)===fy);
+              const fyExpenses=expenses.filter(e=>fyLabel(e.date)===fy);
+              const fyIncome=income.filter(i=>fyLabel(i.date)===fy);
+              const pl=plFor(fyLines,fyExpenses,fyIncome);
+              return(
+                <div key={fy}>
+                  <div className="flex items-center justify-between mb-3">
+                    <h3 className="font-black text-xl" style={{fontFamily:F.display,color:C.zenkyPurple}}>{fy}</h3>
+                    <button onClick={()=>exportPL(pl,fy)} className="inline-flex items-center gap-1 text-xs font-bold" style={{color:C.zenkyOrange}}><Download size={13}/>Export {fy}</button>
+                  </div>
+                  <PLView pl={pl} label={fy}/>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      );
+    }
+
+    // ── Monthly (existing) ──
     const monthly=useMemo(()=>{
       const groups={};
       const add=(date,amount,type,head)=>{
@@ -2654,53 +2884,70 @@ function FinancialsView({investors,setInvestors,investments,setInvestments,expen
       downloadCsv("financial_monthly_report.csv",csv);
     }
 
-    if(!monthly.length)return<Empty icon={IndianRupee} title="No data yet" message="Add income, investments, or expenses to see monthly reports."/>;
+    function MonthlyView(){
+      if(!monthly.length)return<Empty icon={IndianRupee} title="No data yet" message="Add income, investments, or expenses to see monthly reports."/>;
+      return(
+        <div>
+          {byPerson.length>0&&(
+            <Card className="mb-6">
+              <h3 className="font-bold text-lg mb-4" style={{fontFamily:F.display,color:C.darkText}}>Accountability — Expenses by Person</h3>
+              <div className="space-y-2">
+                {byPerson.map(p=>(
+                  <div key={p.name} className="flex items-center justify-between p-3 rounded-xl" style={{backgroundColor:C.bgLight}}>
+                    <div className="flex items-center gap-2">
+                      <Stamp tone={p.name==="Unattributed"?"pink":"purple"}>{p.name}</Stamp>
+                      <span className="text-xs" style={{color:C.lightText}}>{p.count} expense{p.count!==1?"s":""}</span>
+                    </div>
+                    <span className="font-bold" style={{fontFamily:F.mono,color:C.zenkyOrange}}>{fmtINR(p.amount)}</span>
+                  </div>
+                ))}
+              </div>
+              {byPerson.some(p=>p.name==="Unattributed")&&<p className="text-xs mt-3" style={{color:C.lightText}}>"Unattributed" expenses don't have a "Spent By" person recorded — edit them in the Expenses tab to assign one.</p>}
+            </Card>
+          )}
+          <div className="flex justify-end mb-4"><button onClick={exportMonthly} className="inline-flex items-center gap-1 text-xs font-bold" style={{color:C.zenkyOrange}}><Download size={13}/>Export Monthly Report</button></div>
+          <div className="space-y-4">
+            {monthly.map(m=>(
+              <Card key={m.key}>
+                <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
+                  <div className="font-bold text-lg" style={{fontFamily:F.display,color:C.zenkyPurple}}>{m.key}</div>
+                  <div className="flex items-center gap-4 text-right">
+                    <div><div className="text-xs" style={{color:C.lightText}}>Income</div><div className="font-bold" style={{fontFamily:F.mono,color:C.mintGreen}}>{fmtINR(m.income)}</div></div>
+                    <div><div className="text-xs" style={{color:C.lightText}}>Expense</div><div className="font-bold" style={{fontFamily:F.mono,color:C.zenkyOrange}}>{fmtINR(m.expense)}</div></div>
+                    <div><div className="text-xs" style={{color:C.lightText}}>Net</div><div className="font-bold" style={{fontFamily:F.mono,color:m.income-m.expense>=0?C.mintGreen:C.zenkyPink}}>{fmtINR(m.income-m.expense)}</div></div>
+                  </div>
+                </div>
+                <div className="space-y-1">
+                  {Object.entries(m.byHead).sort((a,b)=>b[1]-a[1]).map(([hk,amt])=>{
+                    const[type,head]=hk.split(":");
+                    return(
+                      <div key={hk} className="flex justify-between text-xs py-1 border-t" style={{borderColor:C.border}}>
+                        <span style={{color:C.darkText}}>{head}</span>
+                        <span className="font-bold" style={{fontFamily:F.mono,color:type==="income"?C.mintGreen:C.zenkyOrange}}>{type==="income"?"+":"−"}{fmtINR(amt)}</span>
+                      </div>
+                    );
+                  })}
+                </div>
+              </Card>
+            ))}
+          </div>
+        </div>
+      );
+    }
 
     return(
       <div>
-        {byPerson.length>0&&(
-          <Card className="mb-6">
-            <h3 className="font-bold text-lg mb-4" style={{fontFamily:F.display,color:C.darkText}}>Accountability — Expenses by Person</h3>
-            <div className="space-y-2">
-              {byPerson.map(p=>(
-                <div key={p.name} className="flex items-center justify-between p-3 rounded-xl" style={{backgroundColor:C.bgLight}}>
-                  <div className="flex items-center gap-2">
-                    <Stamp tone={p.name==="Unattributed"?"pink":"purple"}>{p.name}</Stamp>
-                    <span className="text-xs" style={{color:C.lightText}}>{p.count} expense{p.count!==1?"s":""}</span>
-                  </div>
-                  <span className="font-bold" style={{fontFamily:F.mono,color:C.zenkyOrange}}>{fmtINR(p.amount)}</span>
-                </div>
-              ))}
-            </div>
-            {byPerson.some(p=>p.name==="Unattributed")&&<p className="text-xs mt-3" style={{color:C.lightText}}>"Unattributed" expenses don't have a "Spent By" person recorded — edit them in the Expenses tab to assign one.</p>}
-          </Card>
-        )}
-        <div className="flex justify-end mb-4"><button onClick={exportMonthly} className="inline-flex items-center gap-1 text-xs font-bold" style={{color:C.zenkyOrange}}><Download size={13}/>Export Monthly Report</button></div>
-        <div className="space-y-4">
-          {monthly.map(m=>(
-            <Card key={m.key}>
-              <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
-                <div className="font-bold text-lg" style={{fontFamily:F.display,color:C.zenkyPurple}}>{m.key}</div>
-                <div className="flex items-center gap-4 text-right">
-                  <div><div className="text-xs" style={{color:C.lightText}}>Income</div><div className="font-bold" style={{fontFamily:F.mono,color:C.mintGreen}}>{fmtINR(m.income)}</div></div>
-                  <div><div className="text-xs" style={{color:C.lightText}}>Expense</div><div className="font-bold" style={{fontFamily:F.mono,color:C.zenkyOrange}}>{fmtINR(m.expense)}</div></div>
-                  <div><div className="text-xs" style={{color:C.lightText}}>Net</div><div className="font-bold" style={{fontFamily:F.mono,color:m.income-m.expense>=0?C.mintGreen:C.zenkyPink}}>{fmtINR(m.income-m.expense)}</div></div>
-                </div>
-              </div>
-              <div className="space-y-1">
-                {Object.entries(m.byHead).sort((a,b)=>b[1]-a[1]).map(([hk,amt])=>{
-                  const[type,head]=hk.split(":");
-                  return(
-                    <div key={hk} className="flex justify-between text-xs py-1 border-t" style={{borderColor:C.border}}>
-                      <span style={{color:C.darkText}}>{head}</span>
-                      <span className="font-bold" style={{fontFamily:F.mono,color:type==="income"?C.mintGreen:C.zenkyOrange}}>{type==="income"?"+":"−"}{fmtINR(amt)}</span>
-                    </div>
-                  );
-                })}
-              </div>
-            </Card>
+        <div className="flex gap-1.5 mb-6 overflow-x-auto pb-1">
+          {REPORT_TABS.map(t=>(
+            <button key={t.id} onClick={()=>setReportTab(t.id)} className="px-3.5 py-2 rounded-full text-xs font-bold whitespace-nowrap transition-colors" style={{backgroundColor:reportTab===t.id?C.zenkyPurple:C.softWhite,color:reportTab===t.id?C.softWhite:C.darkText,border:`2px solid ${reportTab===t.id?C.zenkyPurple:C.border}`,fontFamily:F.display}}>
+              {t.label}
+            </button>
           ))}
         </div>
+        {reportTab==="pl"&&<PLView pl={overallPL} label="Overall (All Time)"/>}
+        {reportTab==="datewise"&&<DateWiseLedger/>}
+        {reportTab==="fy"&&<FinancialYearView/>}
+        {reportTab==="monthly"&&<MonthlyView/>}
       </div>
     );
   }
