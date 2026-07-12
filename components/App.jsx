@@ -416,7 +416,7 @@ function LoginScreen({onLogin}){
 }
 
 
-function Sidebar({view,setView,open,setOpen,synced,role,onUnlock,onLock,onLogout}){
+function Sidebar({view,setView,open,setOpen,synced,role,canBeAdmin,currentUserName,onUnlock,onLock,onLogout}){
   const [showPinBox,setShowPinBox]=useState(false);
   const [pinInput,setPinInput]=useState("");
   const visibleNav=NAV.filter(item=>!item.adminOnly||role==="admin");
@@ -453,7 +453,7 @@ function Sidebar({view,setView,open,setOpen,synced,role,onUnlock,onLock,onLogout
               <span className="inline-flex items-center gap-1.5 text-xs font-bold" style={{color:C.sunshineYellow,fontFamily:F.body}}><Unlock size={13}/>Admin mode</span>
               <button onClick={onLock} className="text-xs font-bold underline" style={{color:"rgba(255,255,255,0.7)"}}>Lock</button>
             </div>
-          ):showPinBox?(
+          ):!canBeAdmin?null:showPinBox?(
             <div className="space-y-2">
               <Input type="password" placeholder="Admin PIN" value={pinInput} onChange={e=>setPinInput(e.target.value)} onKeyDown={e=>e.key==="Enter"&&handleUnlock()} style={{backgroundColor:"rgba(255,255,255,0.9)"}}/>
               <div className="flex gap-2">
@@ -466,6 +466,7 @@ function Sidebar({view,setView,open,setOpen,synced,role,onUnlock,onLock,onLogout
           )}
         </div>
         <div className="px-5 py-2.5 text-xs border-t text-center" style={{borderColor:"rgba(255,255,255,0.15)"}}>
+          {currentUserName&&<div className="mb-1" style={{color:"rgba(255,255,255,0.5)"}}>Signed in as <strong style={{color:"rgba(255,255,255,0.8)"}}>{currentUserName}</strong></div>}
           <button onClick={onLogout} className="font-bold underline" style={{color:"rgba(255,255,255,0.7)"}}>Log Out</button>
         </div>
         <div className="px-5 py-3 text-xs border-t text-center font-semibold" style={{borderColor:"rgba(255,255,255,0.15)",color:"rgba(255,255,255,0.6)",fontFamily:F.body}}>
@@ -1996,12 +1997,43 @@ function SourceDataView({activityLog,synced,salesLines,setSalesLines,reports,set
 }
 
 /* ═══ ACCESS MANAGEMENT (Admin only) ═══ */
-function AccessManagementView({role,adminPin,setAdminPin,loginCreds,setLoginCreds,showToast,logActivity}){
+function AccessManagementView({role,adminPin,setAdminPin,loginCreds,setLoginCreds,users,setUsers,showToast,logActivity}){
   const [newPin,setNewPin]=useState("");
   const [confirmPin,setConfirmPin]=useState("");
   const [newUsername,setNewUsername]=useState("");
   const [newPassword,setNewPassword]=useState("");
   const [confirmPassword,setConfirmPassword]=useState("");
+  const [userForm,setUserForm]=useState({username:"",password:"",name:"",canBeAdmin:false});
+  const [editUserId,setEditUserId]=useState(null);
+  const [editUserValues,setEditUserValues]=useState({});
+  const [deleteUserId,setDeleteUserId]=useState(null);
+
+  function addUser(){
+    const uname=userForm.username.trim();
+    if(!uname){showToast("error","Username can't be empty.");return;}
+    if(userForm.password.length<6){showToast("error","Password must be at least 6 characters.");return;}
+    if(uname===(loginCreds?.username||DEFAULT_LOGIN.username)||users.some(u=>u.username===uname)){showToast("error",`Username "${uname}" is already in use.`);return;}
+    const user={id:Date.now().toString(),username:uname,password:userForm.password,name:userForm.name.trim()||uname,canBeAdmin:userForm.canBeAdmin};
+    setUsers([...users,user]);
+    logActivity?.("User added",`${user.name} (${user.username})${user.canBeAdmin?" — can request admin":""}`);
+    showToast("success",`Added user ${user.name}. ✨`);
+    setUserForm({username:"",password:"",name:"",canBeAdmin:false});
+  }
+  function saveUserEdit(id){
+    if(editUserValues.password&&editUserValues.password.length<6){showToast("error","Password must be at least 6 characters.");return;}
+    setUsers(users.map(u=>u.id===id?{...u,name:editUserValues.name.trim()||u.username,canBeAdmin:editUserValues.canBeAdmin,...(editUserValues.password?{password:editUserValues.password}:{})}:u));
+    logActivity?.("User edited",editUserValues.name||id);
+    showToast("success","Saved. ✨");
+    setEditUserId(null);
+  }
+  function removeUser(id){
+    const u=users.find(x=>x.id===id);
+    setUsers(users.filter(x=>x.id!==id));
+    logActivity?.("User removed",u?.name||id);
+    showToast("success","User removed.");
+    setDeleteUserId(null);
+  }
+
   function savePin(){
     if(newPin.length<4){showToast("error","PIN must be at least 4 characters.");return;}
     if(newPin!==confirmPin){showToast("error","PINs don't match.");return;}
@@ -2045,7 +2077,7 @@ function AccessManagementView({role,adminPin,setAdminPin,loginCreds,setLoginCred
           </div>
         </div>
         <p className="text-xs mt-4 p-2.5 rounded-lg" style={{backgroundColor:"#FFF3E6",color:"#9a5b0f"}}>
-          ⚠️ The login screen and this PIN are both lightweight gates stored with your workspace data — enough to keep casual visitors and staff out of critical actions, but not bank-grade security (no per-person accounts, no audit-proof enforcement). For real multi-user accounts, Supabase Auth would be the next upgrade.
+          ⚠️ Team members below get their own username/password and admin-visibility setting, which is a real improvement — but this is still stored with your workspace data, not enforced by a real authentication server (no password hashing, no session tokens, no audit-proof logging of who did what). Good enough to keep casual visitors out and reduce accidental admin access — not bank-grade security. For that, Supabase Auth would be the next upgrade.
         </p>
       </Card>
 
@@ -2059,6 +2091,58 @@ function AccessManagementView({role,adminPin,setAdminPin,loginCreds,setLoginCred
         </div>
         <div className="mt-3"><PrimaryButton onClick={saveLogin}><Save size={15}/>Update Login Credentials</PrimaryButton></div>
         <p className="text-xs mt-3" style={{color:C.lightText}}>Current username is {loginCreds?.username?`"${loginCreds.username}" (set)`:`the default ("${DEFAULT_LOGIN.username}") — change this before sharing your app link.`}</p>
+      </Card>
+
+      <Card className="mb-6">
+        <h3 className="font-bold text-lg mb-2" style={{fontFamily:F.display,color:C.darkText}}>Team Members</h3>
+        <p className="text-xs mb-4" style={{color:C.lightText}}>Add named logins for your team, each with their own username and password. "Can request admin access" controls whether they even see the option to unlock admin — if unchecked, that option is hidden from them entirely, not just PIN-protected.</p>
+
+        <div className="grid sm:grid-cols-3 gap-2 mb-2">
+          <Input placeholder="Display name" value={userForm.name} onChange={e=>setUserForm({...userForm,name:e.target.value})}/>
+          <Input placeholder="Username" value={userForm.username} onChange={e=>setUserForm({...userForm,username:e.target.value})}/>
+          <Input type="password" placeholder="Password (min 6 chars)" value={userForm.password} onChange={e=>setUserForm({...userForm,password:e.target.value})}/>
+        </div>
+        <label className="flex items-center gap-2 mb-3 cursor-pointer">
+          <input type="checkbox" checked={userForm.canBeAdmin} onChange={e=>setUserForm({...userForm,canBeAdmin:e.target.checked})}/>
+          <span className="text-sm" style={{color:C.darkText}}>Can request admin access (sees the "unlock admin" option and may enter the PIN)</span>
+        </label>
+        <PrimaryButton onClick={addUser}><Plus size={16}/>Add Team Member</PrimaryButton>
+
+        {users.length>0&&(
+          <div className="mt-5 overflow-x-auto"><table className="w-full text-sm">
+            <thead><tr style={{color:C.lightText}}><th className="py-2 pr-3 text-left font-bold text-xs uppercase">Name</th><th className="py-2 pr-3 text-left font-bold text-xs uppercase">Username</th><th className="py-2 pr-3 text-left font-bold text-xs uppercase">Admin Option Visible?</th><th/></tr></thead>
+            <tbody>{users.map(u=>{
+              const isEdit=editUserId===u.id;
+              return(
+                <tr key={u.id} className="border-t" style={{borderColor:C.border}}>
+                  <td className="py-2 pr-3 font-bold">{isEdit?<Input value={editUserValues.name} onChange={e=>setEditUserValues({...editUserValues,name:e.target.value})}/>:u.name}</td>
+                  <td className="py-2 pr-3" style={{fontFamily:F.mono,color:C.lightText}}>{u.username}</td>
+                  <td className="py-2 pr-3">
+                    {isEdit?(
+                      <label className="flex items-center gap-2 cursor-pointer"><input type="checkbox" checked={editUserValues.canBeAdmin} onChange={e=>setEditUserValues({...editUserValues,canBeAdmin:e.target.checked})}/><span className="text-xs">Can request admin</span></label>
+                    ):(
+                      u.canBeAdmin?<Stamp tone="purple">Visible</Stamp>:<Stamp tone="pink">Hidden</Stamp>
+                    )}
+                  </td>
+                  <td className="py-2 pr-3">
+                    <div className="flex items-center gap-1 justify-end">
+                      {isEdit?(
+                        <>
+                          <Input type="password" placeholder="New password (optional)" value={editUserValues.password||""} onChange={e=>setEditUserValues({...editUserValues,password:e.target.value})} className="w-40"/>
+                          <GhostButton title="Save" onClick={()=>saveUserEdit(u.id)}><Check size={13}/></GhostButton><GhostButton title="Cancel" onClick={()=>setEditUserId(null)}><X size={13}/></GhostButton>
+                        </>
+                      ):deleteUserId===u.id?(
+                        <><GhostButton title="Confirm" onClick={()=>removeUser(u.id)}><Check size={13}/></GhostButton><GhostButton title="Cancel" onClick={()=>setDeleteUserId(null)}><X size={13}/></GhostButton></>
+                      ):(
+                        <><GhostButton title="Edit" onClick={()=>{setEditUserId(u.id);setEditUserValues({name:u.name,canBeAdmin:u.canBeAdmin,password:""});}}><Pencil size={13}/></GhostButton><GhostButton title="Delete" onClick={()=>setDeleteUserId(u.id)}><Trash2 size={13}/></GhostButton></>
+                      )}
+                    </div>
+                  </td>
+                </tr>
+              );
+            })}</tbody>
+          </table></div>
+        )}
       </Card>
 
       <Card>
@@ -3232,7 +3316,9 @@ export default function App(){
   const [salesLines,setSalesLines]=useState([]);
   const [activityLog,setActivityLog]=useState([]);
   const [adminPin,setAdminPinState]=useState("");
-  const [loginCreds,setLoginCredsState]=useState(null);
+  const [loginCreds,setLoginCredsState]=useState(null); // master/owner login — always admin-capable, acts as bootstrap account
+  const [users,setUsers]=useState([]); // named team members: [{id,username,password,name,canBeAdmin}]
+  const [currentUser,setCurrentUser]=useState(null); // {username,name,canBeAdmin,isMaster}
   const [investors,setInvestors]=useState([]);
   const [investments,setInvestments]=useState([]);
   const [expenses,setExpenses]=useState([]);
@@ -3260,6 +3346,7 @@ export default function App(){
     setSalesLines(data?.salesLines||[]);setActivityLog(data?.activityLog||[]);
     setAdminPinState(data?.adminPin||"");
     setLoginCredsState(data?.loginCreds||null);
+    setUsers(data?.users||[]);
     setInvestors(data?.investors||[]);setInvestments(data?.investments||[]);
     setExpenses(data?.expenses||[]);setIncome(data?.income||[]);
   }
@@ -3292,7 +3379,10 @@ export default function App(){
         setSynced(hasSync());
       }
       if(typeof window!=="undefined"&&sessionStorage.getItem("zenkybox-role")==="admin")setRole("admin");
-      if(typeof window!=="undefined"&&sessionStorage.getItem("zenkybox-logged-in")==="1")setIsLoggedIn(true);
+      if(typeof window!=="undefined"&&sessionStorage.getItem("zenkybox-logged-in")==="1"){
+        setIsLoggedIn(true);
+        try{const savedUser=sessionStorage.getItem("zenkybox-current-user");if(savedUser)setCurrentUser(JSON.parse(savedUser));}catch(e){}
+      }
       if(!cancelled)setLoaded(true);
     })();
     return()=>{cancelled=true;};
@@ -3322,12 +3412,12 @@ export default function App(){
     if(!loaded||!canSave)return;
     clearTimeout(saveTimeout.current);
     saveTimeout.current=setTimeout(()=>{
-      saveData({skus,combos,reports,salesLines,activityLog,adminPin,loginCreds,investors,investments,expenses,income})
+      saveData({skus,combos,reports,salesLines,activityLog,adminPin,loginCreds,users,investors,investments,expenses,income})
         .then(timestamp=>{if(timestamp)lastKnownUpdatedAt.current=timestamp;})
         .catch(()=>{});
     },500);
     return()=>clearTimeout(saveTimeout.current);
-  },[skus,combos,reports,salesLines,activityLog,adminPin,loginCreds,investors,investments,expenses,income,loaded,canSave]);
+  },[skus,combos,reports,salesLines,activityLog,adminPin,loginCreds,users,investors,investments,expenses,income,loaded,canSave]);
 
   // For destructive/corrective actions (Flush, Cleanup, Clear All, Replace All) —
   // caller supplies the COMPLETE new payload explicitly (not read from state,
@@ -3379,20 +3469,38 @@ export default function App(){
   function setLoginCreds(creds){setLoginCredsState(creds);}
 
   function handleLogin(username,password){
-    const correct=loginCreds||DEFAULT_LOGIN;
-    if(username===correct.username&&password===correct.password){
+    const master=loginCreds||DEFAULT_LOGIN;
+    if(username===master.username&&password===master.password){
       setIsLoggedIn(true);
-      if(typeof window!=="undefined")sessionStorage.setItem("zenkybox-logged-in","1");
+      const user={username,name:"Owner",canBeAdmin:true,isMaster:true};
+      setCurrentUser(user);
+      if(typeof window!=="undefined"){
+        sessionStorage.setItem("zenkybox-logged-in","1");
+        sessionStorage.setItem("zenkybox-current-user",JSON.stringify(user));
+      }
+      return true;
+    }
+    const matched=users.find(u=>u.username===username&&u.password===password);
+    if(matched){
+      setIsLoggedIn(true);
+      const user={username:matched.username,name:matched.name||matched.username,canBeAdmin:!!matched.canBeAdmin,isMaster:false};
+      setCurrentUser(user);
+      if(typeof window!=="undefined"){
+        sessionStorage.setItem("zenkybox-logged-in","1");
+        sessionStorage.setItem("zenkybox-current-user",JSON.stringify(user));
+      }
       return true;
     }
     return false;
   }
   function handleLogout(){
     setIsLoggedIn(false);
+    setCurrentUser(null);
     setRole("staff");
     if(typeof window!=="undefined"){
       sessionStorage.removeItem("zenkybox-logged-in");
       sessionStorage.removeItem("zenkybox-role");
+      sessionStorage.removeItem("zenkybox-current-user");
     }
   }
 
@@ -3435,7 +3543,7 @@ export default function App(){
   return(
     <div className="flex h-screen overflow-hidden" style={{backgroundColor:C.bgLight,fontFamily:F.body}}>
       <style>{`@import url('https://fonts.googleapis.com/css2?family=Fredoka:wght@400;500;600;700&family=Baloo+2:wght@500;600;700&family=Nunito:wght@400;500;600;700&display=swap');`}</style>
-      <Sidebar view={view} setView={setView} open={sidebarOpen} setOpen={setSidebarOpen} synced={synced} role={role} onUnlock={handleUnlock} onLock={handleLock} onLogout={handleLogout}/>
+      <Sidebar view={view} setView={setView} open={sidebarOpen} setOpen={setSidebarOpen} synced={synced} role={role} canBeAdmin={currentUser?.canBeAdmin??true} currentUserName={currentUser?.name} onUnlock={handleUnlock} onLock={handleLock} onLogout={handleLogout}/>
       <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
         {/* Mobile header */}
         <div className="md:hidden flex items-center justify-between px-4 py-3 flex-shrink-0" style={{backgroundColor:C.zenkyPurple}}>
@@ -3458,7 +3566,7 @@ export default function App(){
               {view==="costing"&&<CostingPricingView skus={skus}/>}
               {view==="financials"&&<FinancialsView investors={investors} setInvestors={setInvestors} investments={investments} setInvestments={setInvestments} expenses={expenses} setExpenses={setExpenses} income={income} setIncome={setIncome} salesLines={salesLines} skus={skus} combos={combos} reports={reports} activityLog={activityLog} adminPin={adminPin} loginCreds={loginCreds} forceSaveNow={forceSaveNow} logActivity={logActivity} showToast={showToast}/>}
               {view==="source-data"&&<SourceDataView activityLog={activityLog} synced={synced} salesLines={salesLines} setSalesLines={setSalesLines} reports={reports} setReports={setReports} skus={skus} setSkus={setSkus} combos={combos} adminPin={adminPin} loginCreds={loginCreds} investors={investors} investments={investments} expenses={expenses} income={income} forceSaveNow={forceSaveNow} logActivity={logActivity} showToast={showToast}/>}
-              {view==="access"&&<AccessManagementView role={role} adminPin={adminPin} setAdminPin={setAdminPin} loginCreds={loginCreds} setLoginCreds={setLoginCreds} showToast={showToast} logActivity={logActivity}/>}
+              {view==="access"&&<AccessManagementView role={role} adminPin={adminPin} setAdminPin={setAdminPin} loginCreds={loginCreds} setLoginCreds={setLoginCreds} users={users} setUsers={setUsers} showToast={showToast} logActivity={logActivity}/>}
             </>
           )}
         </main>
