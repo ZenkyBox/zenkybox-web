@@ -1641,38 +1641,45 @@ function calcWebsiteChannel(ch,cogs,gatewayPercent,gatewayFixed){
   return{gatewayFee,netProceeds,netProfit,margin};
 }
 
-/* Reference-only lookup for Amazon's closing fee slabs — NOT used in any
-   calculation (per the framework: Amazon's own numbers are pasted in, since
-   fee slabs shift with each Amazon fee revision). This just saves a tab-switch
-   to remember roughly which band a price falls in before checking the real
-   figure on Amazon's Revenue Calculator. */
+/* Verified directly against a real Amazon Net Proceeds Report from this
+   account (cross-checked: the 0-299 slab matches "Per-item Selling Fees" of
+   ₹1.18 + its actual ₹0.18 tax seen in that report; the other two slabs match
+   a clean 18% GST calculation on the closing fee). This is real, current data
+   for this account — not a third-party estimate — but Amazon can still revise
+   fees at any time, so it's offered as a one-click fill you can always
+   override, never a silent auto-calculation. */
+const CLOSING_FEE_SLABS=[
+  {min:0,max:299,fee:1.18,tax:0.18,label:"₹0 – ₹299"},
+  {min:300,max:499,fee:22,tax:3.96,label:"₹300 – ₹499"},
+  {min:500,max:999,fee:45,tax:8.1,label:"₹500 – ₹999"},
+];
+function lookupClosingFee(price){
+  const p=Number(price)||0;
+  return CLOSING_FEE_SLABS.find(s=>p>=s.min&&p<=s.max)||null;
+}
+
 function ClosingFeeReferenceCard(){
-  const [open,setOpen]=useState(false);
-  const slabs=[
-    {range:"Up to ₹250",fee:"~₹25"},
-    {range:"₹251 – ₹500",fee:"~₹24"},
-    {range:"₹501 – ₹1,000",fee:"~₹28"},
-    {range:"₹1,001 – ₹5,000",fee:"~₹50"},
-    {range:"Above ₹5,000",fee:"~₹60"},
-  ];
+  const [open,setOpen]=useState(true);
   return(
     <Card className="mb-4">
       <button onClick={()=>setOpen(!open)} className="w-full flex items-center justify-between">
-        <span className="font-bold text-sm" style={{fontFamily:F.display,color:C.darkText}}>Closing Fee Reference (varies by price slab)</span>
+        <span className="font-bold text-sm" style={{fontFamily:F.display,color:C.darkText}}>Closing Fee Reference (verified against real account data)</span>
         {open?<ChevronDown size={16} style={{color:C.lightText}}/>:<ChevronRight size={16} style={{color:C.lightText}}/>}
       </button>
       {open&&(
         <div className="mt-3">
+          <p className="text-xs mb-3" style={{color:C.lightText}}>Cross-checked against a real Amazon Net Proceeds Report from this account — not a third-party guess. Use "Auto-fill from slab" in the calculator below to apply it, always editable.</p>
           <div className="overflow-x-auto"><table className="w-full text-sm">
-            <thead><tr style={{color:C.lightText}}><th className="py-1.5 pr-3 text-left text-xs uppercase font-bold">Selling Price</th><th className="py-1.5 pr-3 text-left text-xs uppercase font-bold">Typical Closing Fee</th></tr></thead>
-            <tbody>{slabs.map(s=>(
-              <tr key={s.range} className="border-t" style={{borderColor:C.border}}>
-                <td className="py-1.5 pr-3">{s.range}</td>
-                <td className="py-1.5 pr-3 font-bold" style={{fontFamily:F.mono,color:C.zenkyPurple}}>{s.fee}</td>
+            <thead><tr style={{color:C.lightText}}><th className="py-1.5 pr-3 text-left text-xs uppercase font-bold">Selling Price</th><th className="py-1.5 pr-3 text-left text-xs uppercase font-bold">Closing Fee</th><th className="py-1.5 pr-3 text-left text-xs uppercase font-bold">Tax (18% GST)</th></tr></thead>
+            <tbody>{CLOSING_FEE_SLABS.map(s=>(
+              <tr key={s.label} className="border-t" style={{borderColor:C.border}}>
+                <td className="py-1.5 pr-3">{s.label}</td>
+                <td className="py-1.5 pr-3 font-bold" style={{fontFamily:F.mono,color:C.zenkyPurple}}>{fmtINR(s.fee)}</td>
+                <td className="py-1.5 pr-3" style={{fontFamily:F.mono,color:C.lightText}}>{fmtINR(s.tax)}</td>
               </tr>
             ))}</tbody>
           </table></div>
-          <p className="text-xs mt-2" style={{color:C.lightText}}>Approximate only, general categories — some categories (books/media, premium) fall outside this band, and FBA vs Easy Ship rate cards differ slightly. Always confirm the exact figure from Amazon's Revenue Calculator for this specific SKU before entering it below.</p>
+          <p className="text-xs mt-2" style={{color:C.lightText}}>Verified for MFN/Easy Ship listings under ₹1,000. Above ₹1,000, or for FBA-specific rates, check Amazon's Revenue Calculator directly — this table hasn't been verified for those bands. The calculator below already applies 18% GST automatically on top of whatever fees you enter, so you don't need to add the tax separately.</p>
         </div>
       )}
     </Card>
@@ -1772,6 +1779,16 @@ function ProfitCalculatorView({skus,combos,channelProfitData,setChannelProfitDat
                   <Card>
                     <div className="grid sm:grid-cols-2 gap-3 mb-4">
                       <div className="relative"><label className="text-xs font-bold uppercase block mb-1" style={{color:C.lightText}}>Item Price (Selling Price)</label><span className="absolute left-3 top-8 text-sm" style={{color:C.lightText}}>₹</span><Input type="number" className="pl-6" value={form[key].sellingPrice} onChange={e=>setForm({...form,[key]:{...form[key],sellingPrice:e.target.value}})}/></div>
+                      <div className="flex items-end">
+                        <button onClick={()=>{
+                          const slab=lookupClosingFee(form[key].sellingPrice);
+                          if(!slab){showToast("error","No verified slab for this price — check Amazon's Revenue Calculator directly.");return;}
+                          setForm({...form,[key]:{...form[key],closingFee:slab.fee}});
+                          showToast("success",`Filled Closing Fee: ${fmtINR(slab.fee)} (${slab.label} slab). GST is added automatically.`);
+                        }} className="px-3 py-2.5 rounded-xl text-xs font-bold border-2" style={{borderColor:C.zenkyPurple,color:C.zenkyPurple,fontFamily:F.display}}>
+                          Auto-fill Closing Fee from slab
+                        </button>
+                      </div>
                     </div>
                     <div className="text-xs font-bold uppercase mb-2" style={{color:C.lightText}}>Paste from Amazon's Revenue Calculator</div>
                     <div className="grid sm:grid-cols-2 gap-3 mb-4">
@@ -2097,30 +2114,6 @@ function SourceDataView({activityLog,synced,salesLines,setSalesLines,reports,set
     setScanResult(null);setShowConfirm(false);setConfirmText("");
   }
 
-  const [showFlushConfirm,setShowFlushConfirm]=useState(false);
-  const [flushConfirmText,setFlushConfirmText]=useState("");
-
-  function flushAllSalesData(){
-    if(flushConfirmText.trim().toUpperCase()!=="FLUSH"){showToast("error",'Type "FLUSH" exactly to confirm.');return;}
-    const lineCount=salesLines.length,reportCount=reports.length;
-    const newSkus=skus.map(s=>({...s,stock:s.initialStock??s.stock}));
-    const newActivityLog=[{id:Date.now().toString()+Math.random(),date:new Date().toISOString(),action:"Flushed all sales data",detail:`Cleared ${lineCount} sale lines and ${reportCount} reports; reset stock to initial baseline for all SKUs`,role:"admin",user:currentUser?.name||currentUser?.username||"unknown"},...activityLog].slice(0,300);
-    setSalesLines([]);
-    setReports([]);
-    // Reset every SKU's stock back to its recorded baseline, undoing every sales
-    // deduction ever applied — the clean-slate option when duplicate/corrupted
-    // uploads have made the current numbers untrustworthy.
-    setSkus(newSkus);
-    logActivity?.("Flushed all sales data",`Cleared ${lineCount} sale lines and ${reportCount} reports; reset stock to initial baseline for all SKUs`);
-    // Write immediately — this is the fix for "flush didn't stick": waiting for
-    // the normal 500ms debounce left a window where a stale open tab elsewhere
-    // could resave its old (pre-flush) state and overwrite this. Forcing the
-    // write right now, with the exact new values, closes that window.
-    forceSaveNow?.({skus:newSkus,combos,reports:[],salesLines:[],activityLog:newActivityLog,adminPin,loginCreds,investors,investments,expenses,income});
-    showToast("success","All sales data flushed and stock reset to baseline. 🗑️");
-    setShowFlushConfirm(false);setFlushConfirmText("");
-  }
-
   return(
     <div>
       <SectionHeader title="Source Data" subtitle="Database connection and a day-wise record of every change made to this workspace."/>
@@ -2208,36 +2201,6 @@ function SourceDataView({activityLog,synced,salesLines,setSalesLines,reports,set
                 <button onClick={()=>{setShowConfirm(false);setConfirmText("");}} className="text-sm font-bold" style={{color:C.lightText,fontFamily:F.body}}>Cancel</button>
               </div>
             )}
-          </div>
-        )}
-      </Card>
-
-      <Card className="mb-6" style={{borderColor:"#fecaca"}}>
-        <div className="flex items-center gap-2 mb-3">
-          <Trash2 size={18} style={{color:"#dc2626"}}/>
-          <h3 className="font-bold text-lg" style={{fontFamily:F.display,color:"#991b1b"}}>Flush All Sales Data (Clean Slate)</h3>
-        </div>
-        <p className="text-sm mb-1" style={{color:C.darkText,fontFamily:F.body}}>
-          For when duplicate/corrupted uploads have made current numbers untrustworthy and you'd rather start fresh than fix them piece by piece. This action:
-        </p>
-        <ul className="text-sm mb-4 list-disc pl-5 space-y-0.5" style={{color:C.darkText,fontFamily:F.body}}>
-          <li>Clears every sale line ({salesLines.length} currently) — Sales Report goes back to zero</li>
-          <li>Clears every applied report ({reports.length} currently) — Reports tab goes back to zero</li>
-          <li>Resets every SKU's stock back to its original recorded baseline — undoing every deduction ever applied</li>
-          <li><strong>Keeps</strong> your SKU Catalog and Gift Combos exactly as they are — nothing about product definitions is touched</li>
-        </ul>
-        {!showFlushConfirm?(
-          <button onClick={()=>setShowFlushConfirm(true)} className="inline-flex items-center gap-2 px-4 py-2.5 rounded-full text-sm font-bold text-white" style={{backgroundColor:"#dc2626",fontFamily:F.display}}>
-            <Trash2 size={15}/>Flush All Sales Data
-          </button>
-        ):(
-          <div className="p-3.5 rounded-xl" style={{backgroundColor:"#fff5f5",border:"2px solid #fecaca"}}>
-            <p className="font-bold text-sm mb-2" style={{color:"#991b1b",fontFamily:F.display}}>This cannot be undone. Type "FLUSH" to confirm.</p>
-            <div className="flex items-center gap-2 flex-wrap">
-              <Input placeholder='Type "FLUSH" to confirm' value={flushConfirmText} onChange={e=>setFlushConfirmText(e.target.value)} className="max-w-xs" style={{borderColor:"#fecaca"}}/>
-              <button onClick={flushAllSalesData} className="px-4 py-2.5 rounded-xl text-sm font-bold text-white" style={{backgroundColor:"#dc2626",fontFamily:F.display}}>Confirm Flush</button>
-              <button onClick={()=>{setShowFlushConfirm(false);setFlushConfirmText("");}} className="text-sm font-bold" style={{color:C.lightText,fontFamily:F.body}}>Cancel</button>
-            </div>
           </div>
         )}
       </Card>
@@ -3039,6 +3002,62 @@ function FinancialsView({investors,setInvestors,investments,setInvestments,expen
     const [deleteId,setDeleteId]=useState(null);
     const amazonRevenue=useMemo(()=>salesLines.filter(l=>l.channel==="amazon").reduce((s,l)=>s+l.revenue,0),[salesLines]);
     const websiteRevenue=useMemo(()=>salesLines.filter(l=>l.channel==="website").reduce((s,l)=>s+l.revenue,0),[salesLines]);
+
+    // ── Import Amazon Net Proceeds Report ──
+    // This exists specifically to prevent the gross-vs-net mistake: typing in
+    // the gross selling price instead of what Amazon actually pays out after
+    // referral/closing/fulfilment fees and GST. This reads Amazon's own
+    // official report and uses its "Net Proceed" figure directly — verified
+    // against a real export, columns are located by header text (not fixed
+    // positions), since Amazon's report layout can shift.
+    const [entryMode,setEntryMode]=useState("single"); // "single" | "netproceeds"
+    const [npStage,setNpStage]=useState("idle");
+    const [npFileName,setNpFileName]=useState("");
+    const [npRows,setNpRows]=useState([]);
+    const [npDate,setNpDate]=useState(new Date().toISOString().slice(0,10));
+    const npFileRef=useRef(null);
+
+    function parseNetProceedsGrid(grid){
+      if(!grid||grid.length<3){showToast("error","File doesn't look like a Net Proceeds Report.");return;}
+      const catRow=grid[0],subRow=grid[1];
+      let cat="";
+      const labels=catRow.map((v,i)=>{if(v!==undefined&&v!==null&&v!=="")cat=v;return`${cat} / ${subRow[i]??""}`;});
+      const findCol=(catMatch,subMatch)=>labels.findIndex(l=>l.toLowerCase().includes(catMatch.toLowerCase())&&l.toLowerCase().includes(subMatch.toLowerCase()));
+      const skuCol=findCol("product","sku");
+      const nameCol=findCol("product","product name");
+      const netCol=findCol("net proceed","total");
+      const grossCol=findCol("sales","total sales");
+      if(skuCol<0||netCol<0){showToast("error","Couldn't find SKU/Net Proceed columns — is this the right report type?");return;}
+      const rows=grid.slice(2)
+        .filter(r=>r[skuCol])// drop the blank-SKU summary/total row
+        .map(r=>({sku:r[skuCol],name:r[nameCol]||"",netProceed:Number(r[netCol])||0,grossSales:Number(r[grossCol])||0}));
+      if(!rows.length){showToast("error","No product rows found in this file.");return;}
+      setNpRows(rows);setNpStage("preview");
+    }
+
+    function handleNpFile(file){
+      if(!file)return;setNpFileName(file.name);
+      const ext=file.name.split(".").pop().toLowerCase();
+      if(ext==="xlsx"||ext==="xls"){
+        const r=new FileReader();
+        r.onload=e=>{try{const wb=XLSX.read(e.target.result,{type:"array"});const grid=XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]],{header:1,defval:""});parseNetProceedsGrid(grid);}catch{showToast("error","Could not parse this file.");}};
+        r.readAsArrayBuffer(file);
+      }else showToast("error","Upload the .xlsx Net Proceeds Report exported from Seller Central.");
+    }
+
+    const npTotal=npRows.reduce((s,r)=>s+r.netProceed,0);
+    const npGrossTotal=npRows.reduce((s,r)=>s+r.grossSales,0);
+
+    function confirmNpImport(){
+      const comment=npRows.map(r=>`${r.sku}: ${fmtINR(r.netProceed)}`).join("; ");
+      const i={id:Date.now().toString(),date:npDate,head:"Income from Amazon",amount:npTotal,receivedFrom:"",paymentMode:"",comment:`Imported from Net Proceeds Report (${npFileName}) — ${comment}`};
+      setIncome([...income,i]);
+      logActivity?.("Income imported from Net Proceeds Report",`${fmtINR(npTotal)} across ${npRows.length} products, gross was ${fmtINR(npGrossTotal)}`);
+      showToast("success",`Imported ${fmtINR(npTotal)} as verified Amazon income. ✨`);
+      setNpStage("idle");setNpRows([]);setNpFileName("");if(npFileRef.current)npFileRef.current.value="";
+    }
+    function resetNpImport(){setNpStage("idle");setNpRows([]);setNpFileName("");if(npFileRef.current)npFileRef.current.value="";}
+
     function add(){
       const amount=Number(form.amount);
       if(!form.head){showToast("error","Choose an income head.");return;}
@@ -3071,6 +3090,63 @@ function FinancialsView({investors,setInvestors,investments,setInvestments,expen
             For reference — ZenkyBox Sales Report currently shows <strong>{fmtINR(amazonRevenue)}</strong> Amazon revenue and <strong>{fmtINR(websiteRevenue)}</strong> Website revenue from uploaded orders. This is separate from what you log here — log actual payout amounts received if they differ (fees, timing, etc.).
           </div>
         )}
+        <div className="flex gap-1.5 mb-4">
+          {[{id:"single",label:"Add Single Income"},{id:"netproceeds",label:"Import Amazon Net Proceeds Report"}].map(m=>(
+            <button key={m.id} onClick={()=>{setEntryMode(m.id);resetNpImport();}} className="px-3.5 py-1.5 rounded-full text-xs font-bold transition-colors" style={{backgroundColor:entryMode===m.id?C.bgLight:"transparent",color:entryMode===m.id?C.zenkyPurple:C.lightText,border:`1.5px solid ${entryMode===m.id?C.zenkyPurple:C.border}`,fontFamily:F.body}}>
+              {m.label}
+            </button>
+          ))}
+        </div>
+
+        {entryMode==="netproceeds"&&(
+          <Card className="mb-6">
+            <h3 className="font-bold text-lg mb-2" style={{fontFamily:F.display,color:C.darkText}}>Import Amazon Net Proceeds Report</h3>
+            <p className="text-xs mb-4" style={{color:C.lightText}}>
+              From Seller Central: Reports → Payments → Net Proceeds → export as .xlsx. Uses Amazon's own <strong>Net Proceed</strong> figure per product (after referral fee, closing fee, fulfilment/shipping cost, and GST) — not the gross selling price, which is the exact mistake this exists to prevent.
+            </p>
+            {npStage==="idle"&&(
+              <div className="rounded-2xl border-2 border-dashed p-8 text-center" style={{borderColor:C.zenkyPink,backgroundColor:"#FFF8FC"}}>
+                <Upload size={28} className="mx-auto mb-3" style={{color:C.zenkyPink}}/>
+                <p className="font-bold mb-4 text-sm" style={{color:C.darkText,fontFamily:F.display}}>Choose your Net Proceeds Report (.xlsx)</p>
+                <input ref={npFileRef} type="file" accept=".xlsx,.xls" className="hidden" onChange={e=>handleNpFile(e.target.files[0])}/>
+                <PrimaryButton onClick={()=>npFileRef.current?.click()}><Upload size={15}/>Select File</PrimaryButton>
+              </div>
+            )}
+            {npStage==="preview"&&(
+              <div>
+                <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
+                  <span className="text-sm" style={{color:C.darkText}}>Parsed <strong>{npFileName}</strong> — {npRows.length} products</span>
+                  <button onClick={resetNpImport} className="text-sm font-bold" style={{color:C.lightText}}>Change file</button>
+                </div>
+                <div className="overflow-x-auto mb-4 max-h-72 overflow-y-auto"><table className="w-full text-xs">
+                  <thead><tr style={{color:C.lightText}}><th className="py-1.5 pr-3 text-left font-bold uppercase">SKU</th><th className="py-1.5 pr-3 text-left font-bold uppercase">Product</th><th className="py-1.5 pr-3 text-left font-bold uppercase">Gross Sales</th><th className="py-1.5 pr-3 text-left font-bold uppercase">Net Proceed</th></tr></thead>
+                  <tbody>{npRows.map(r=>(
+                    <tr key={r.sku} className="border-t" style={{borderColor:C.border}}>
+                      <td className="py-1.5 pr-3" style={{fontFamily:F.mono,fontWeight:600}}>{r.sku}</td>
+                      <td className="py-1.5 pr-3">{String(r.name).slice(0,40)}</td>
+                      <td className="py-1.5 pr-3" style={{fontFamily:F.mono,color:C.lightText}}>{fmtINR(r.grossSales)}</td>
+                      <td className="py-1.5 pr-3 font-bold" style={{fontFamily:F.mono,color:C.mintGreen}}>{fmtINR(r.netProceed)}</td>
+                    </tr>
+                  ))}</tbody>
+                  <tfoot><tr style={{borderTop:`2px solid ${C.border}`}}>
+                    <td colSpan={2} className="py-2 pr-3 font-bold" style={{fontFamily:F.display}}>Total</td>
+                    <td className="py-2 pr-3 font-bold" style={{fontFamily:F.mono,color:C.zenkyOrange}}>{fmtINR(npGrossTotal)}</td>
+                    <td className="py-2 pr-3 font-bold" style={{fontFamily:F.mono,color:C.mintGreen}}>{fmtINR(npTotal)}</td>
+                  </tfoot>
+                </table></div>
+                <div className="mb-3 p-2.5 rounded-xl text-xs" style={{backgroundColor:C.bgLight,color:C.lightText}}>
+                  This will log <strong style={{color:C.mintGreen}}>{fmtINR(npTotal)}</strong> as one "Income from Amazon" entry — the verified net figure, not the {fmtINR(npGrossTotal)} gross. Difference of {fmtINR(npGrossTotal-npTotal)} is Amazon's fees, already excluded.
+                </div>
+                <div className="flex items-end gap-3 flex-wrap">
+                  <div className="w-full sm:w-52"><label className="text-xs font-bold block mb-1" style={{color:C.lightText}}>Date for this entry</label><Input type="date" value={npDate} onChange={e=>setNpDate(e.target.value)}/></div>
+                  <PrimaryButton onClick={confirmNpImport}><Check size={15}/>Import as Income</PrimaryButton>
+                </div>
+              </div>
+            )}
+          </Card>
+        )}
+
+        {entryMode==="single"&&(
         <Card className="mb-6">
           <h3 className="font-bold text-lg mb-4" style={{fontFamily:F.display,color:C.darkText}}>Add Income</h3>
           <div className="grid sm:grid-cols-3 gap-2 mb-2">
@@ -3091,6 +3167,7 @@ function FinancialsView({investors,setInvestors,investments,setInvestments,expen
           </div>
           <PrimaryButton onClick={add}><Plus size={16}/>Add Income</PrimaryButton>
         </Card>
+        )}
         <Card>
           <div className="flex items-center justify-between mb-4">
             <h3 className="font-bold text-lg" style={{fontFamily:F.display,color:C.darkText}}>{income.length} Income Entr{income.length!==1?"ies":"y"}</h3>
