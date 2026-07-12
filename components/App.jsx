@@ -2921,10 +2921,13 @@ function FinancialsView({investors,setInvestors,investments,setInvestments,expen
           const coveredExpenses=expenses.filter(e=>e.spentBy===inv.id);
           const totalInvested=invTx.reduce((s,t)=>s+Number(t.amount||0),0);
           const totalCovered=coveredExpenses.reduce((s,e)=>s+Number(e.amount||0),0);
-          const timeline=[
-            ...invTx.map(t=>({date:t.date,desc:`Investment${t.fromExpenseId?" (auto — covered expense)":""}`,amount:t.amount,paymentMode:t.paymentMode,comment:t.comment})),
-            ...coveredExpenses.map(e=>({date:e.date,desc:`Covered expense — ${e.head}`,amount:e.amount,paymentMode:e.paymentMode,comment:e.comment})),
-          ].sort((a,b)=>new Date(a.date)-new Date(b.date));
+          // Timeline comes ONLY from investments — this already includes both
+          // direct transfers and auto-linked "covered expense" entries (v5.5).
+          // Do NOT also list the underlying expense record here: that would
+          // show the same money twice (once as the investment credit, once as
+          // the expense debit) and double the investor's displayed total.
+          const timeline=invTx.map(t=>({date:t.date,desc:`Investment${t.fromExpenseId?" (covered expense, auto-logged)":""}`,amount:t.amount,paymentMode:t.paymentMode,comment:t.comment}))
+            .sort((a,b)=>new Date(a.date)-new Date(b.date));
           return{...inv,totalInvested,totalCovered,combined:totalInvested,txCount:timeline.length,timeline}; // note: auto-linked investments already fold covered-expense amounts into totalInvested, so "combined" = totalInvested (no separate addition needed, avoids double counting)
         }).sort((a,b)=>b.combined-a.combined);
       },[]);
@@ -3106,13 +3109,15 @@ function FinancialsView({investors,setInvestors,investments,setInvestments,expen
   function InvestorStatementView(){
     const inv=investors.find(i=>i.id===viewingInvestorId);
     if(!inv)return null;
+    // Timeline comes ONLY from investments — this already includes both direct
+    // transfers and auto-linked "covered expense" entries (v5.5). The underlying
+    // expense record is deliberately NOT also listed here — that would show the
+    // same money twice (once as investment credit, once as expense debit) and
+    // double the investor's Total Invested figure.
     const timeline=useMemo(()=>{
-      const invTx=investments.filter(t=>t.investorId===inv.id);
-      const coveredExpenses=expenses.filter(e=>e.spentBy===inv.id);
-      return[
-        ...invTx.map(t=>({date:t.date,desc:`Investment${t.fromExpenseId?" (covered expense, auto-logged)":""}`,paymentMode:t.paymentMode,comment:t.comment,amount:Number(t.amount||0)})),
-        ...coveredExpenses.map(e=>({date:e.date,desc:`Covered expense — ${e.head}`,paymentMode:e.paymentMode,comment:e.comment,amount:Number(e.amount||0)})),
-      ].sort((a,b)=>new Date(a.date)-new Date(b.date));
+      return investments.filter(t=>t.investorId===inv.id)
+        .map(t=>({date:t.date,desc:`Investment${t.fromExpenseId?" (covered expense, auto-logged)":""}`,paymentMode:t.paymentMode,comment:t.comment,amount:Number(t.amount||0)}))
+        .sort((a,b)=>new Date(a.date)-new Date(b.date));
     },[]);
     const total=timeline.reduce((s,t)=>s+t.amount,0);
 
