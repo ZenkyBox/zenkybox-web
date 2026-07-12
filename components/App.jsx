@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useRef, useCallback } from "react";
+import { useState, useEffect, useMemo, useRef, useCallback, Fragment } from "react";
 import Papa from "papaparse";
 import * as XLSX from "xlsx";
 import {
@@ -234,6 +234,68 @@ function TrendChart({groups}){
 }
 
 /* ═══ SHARED UI ═══ */
+/* Reusable sortable-column table header + hook. Click a header to sort by it;
+   click again to flip direction. Used across the Reports section. */
+function useSortableRows(rows,defaultKey,defaultDir="desc"){
+  const [sortKey,setSortKey]=useState(defaultKey);
+  const [sortDir,setSortDir]=useState(defaultDir);
+  function toggleSort(key){
+    if(sortKey===key)setSortDir(sortDir==="asc"?"desc":"asc");
+    else{setSortKey(key);setSortDir("desc");}
+  }
+  const sorted=useMemo(()=>{
+    const arr=[...rows];
+    arr.sort((a,b)=>{
+      let av=a[sortKey],bv=b[sortKey];
+      if(typeof av==="string")av=av.toLowerCase();
+      if(typeof bv==="string")bv=bv.toLowerCase();
+      if(av<bv)return sortDir==="asc"?-1:1;
+      if(av>bv)return sortDir==="asc"?1:-1;
+      return 0;
+    });
+    return arr;
+  },[rows,sortKey,sortDir]);
+  return{sorted,sortKey,sortDir,toggleSort};
+}
+function SortTH({label,sortKey,activeKey,dir,onClick,className=""}){
+  const active=activeKey===sortKey;
+  return(
+    <th className={`py-2 pr-3 text-left text-xs uppercase font-bold cursor-pointer select-none ${className}`} style={{color:active?C.zenkyPurple:C.lightText}} onClick={()=>onClick(sortKey)}>
+      <span className="inline-flex items-center gap-1">{label}{active&&(dir==="asc"?<ChevronDown size={12} style={{transform:"rotate(180deg)"}}/>:<ChevronDown size={12}/>)}</span>
+    </th>
+  );
+}
+/* Sortable Code/Name/Qty/Revenue/COGS/Gross-Profit table — used by the P&L
+   Statement for both the SKU and Combo revenue breakdowns. */
+function PLSortableTable({rows,title}){
+  const{sorted,sortKey,sortDir,toggleSort}=useSortableRows(rows,"revenue","desc");
+  return(
+    <div className="mb-4">
+      <div className="text-xs font-bold uppercase mb-2" style={{color:C.lightText}}>{title}</div>
+      <div className="overflow-x-auto"><table className="w-full text-sm">
+        <thead><tr>
+          <SortTH label="Code" sortKey="code" activeKey={sortKey} dir={sortDir} onClick={toggleSort}/>
+          <SortTH label="Name" sortKey="name" activeKey={sortKey} dir={sortDir} onClick={toggleSort}/>
+          <SortTH label="Qty" sortKey="qty" activeKey={sortKey} dir={sortDir} onClick={toggleSort}/>
+          <SortTH label="Revenue" sortKey="revenue" activeKey={sortKey} dir={sortDir} onClick={toggleSort}/>
+          <SortTH label="COGS" sortKey="cogs" activeKey={sortKey} dir={sortDir} onClick={toggleSort}/>
+          <SortTH label="Gross Profit" sortKey="gp" activeKey={sortKey} dir={sortDir} onClick={toggleSort}/>
+        </tr></thead>
+        <tbody>{sorted.map(r=>(
+          <tr key={r.code} className="border-t" style={{borderColor:C.border}}>
+            <td className="py-1.5 pr-3" style={{fontFamily:F.mono,fontWeight:600}}>{r.code}</td>
+            <td className="py-1.5 pr-3">{r.name}</td>
+            <td className="py-1.5 pr-3" style={{fontFamily:F.mono}}>{fmt(r.qty)}</td>
+            <td className="py-1.5 pr-3" style={{fontFamily:F.mono}}>{fmtINR(r.revenue)}</td>
+            <td className="py-1.5 pr-3" style={{fontFamily:F.mono}}>{fmtINR(r.cogs)}</td>
+            <td className="py-1.5 pr-3 font-bold" style={{fontFamily:F.mono,color:C.mintGreen}}>{fmtINR(r.gp)}</td>
+          </tr>
+        ))}</tbody>
+      </table></div>
+    </div>
+  );
+}
+
 function Stamp({tone="purple",children}){
   const m={purple:{color:C.zenkyPurple,bg:C.bgLight},pink:{color:C.zenkyPink,bg:"#FFE6F2"},orange:{color:C.zenkyOrange,bg:"#FFF3E6"},mint:{color:C.mintGreen,bg:"#F0FDE8"},blue:{color:"#0ea5e9",bg:"#e0f2fe"}};
   const t=m[tone]||m.purple;
@@ -2016,6 +2078,7 @@ function AccessManagementView({role,adminPin,setAdminPin,loginCreds,setLoginCred
 function FinancialsView({investors,setInvestors,investments,setInvestments,expenses,setExpenses,income,setIncome,salesLines,skus,combos,reports,activityLog,adminPin,loginCreds,forceSaveNow,logActivity,showToast}){
 
   const [tab,setTab]=useState("overview");
+  const [viewingInvestorId,setViewingInvestorId]=useState(null); // set to show the dedicated Investor Statement page instead of normal tab content
   const TABS=[
     {id:"overview",label:"Overview"},
     {id:"investors",label:"Investors"},
@@ -2207,7 +2270,7 @@ function FinancialsView({investors,setInvestors,investments,setInvestments,expen
                 const isEdit=editInvId===inv.id;
                 return(
                   <tr key={inv.id} className="border-t" style={{borderColor:C.border}}>
-                    <td className="py-2 pr-3 font-bold">{isEdit?<Input value={editInvValues.name} onChange={e=>setEditInvValues({...editInvValues,name:e.target.value})}/>:inv.name}</td>
+                    <td className="py-2 pr-3 font-bold">{isEdit?<Input value={editInvValues.name} onChange={e=>setEditInvValues({...editInvValues,name:e.target.value})}/>:<button onClick={()=>setViewingInvestorId(inv.id)} className="underline hover:no-underline" style={{color:C.zenkyPurple}}>{inv.name}</button>}</td>
                     <td className="py-2 pr-3" style={{color:C.lightText}}>{isEdit?<Input value={editInvValues.contact} onChange={e=>setEditInvValues({...editInvValues,contact:e.target.value})}/>:(inv.contact||"—")}</td>
                     <td className="py-2 pr-3" style={{color:C.lightText}}>{isEdit?<Input value={editInvValues.notes} onChange={e=>setEditInvValues({...editInvValues,notes:e.target.value})}/>:(inv.notes||"—")}</td>
                     <td className="py-2 pr-3 font-bold" style={{fontFamily:F.mono,color:C.zenkyPurple}}>{fmtINR(perInvestor[inv.id]||0)}</td>
@@ -2635,6 +2698,7 @@ function FinancialsView({investors,setInvestors,investments,setInvestments,expen
       {id:"pl",label:"P&L Statement"},
       {id:"datewise",label:"Date-wise Ledger"},
       {id:"fy",label:"Financial Year"},
+      {id:"investorwise",label:"Investor-wise"},
       {id:"monthly",label:"Monthly"},
     ];
 
@@ -2716,20 +2780,8 @@ function FinancialsView({investors,setInvestors,investments,setInvestments,expen
 
           <Card className="mb-4">
             <div className="flex items-center justify-between mb-3"><h3 className="font-bold text-lg" style={{fontFamily:F.display,color:C.darkText}}>Revenue by Product & Combo</h3><button onClick={()=>exportPL(pl,label)} className="inline-flex items-center gap-1 text-xs font-bold" style={{color:C.zenkyOrange}}><Download size={13}/>Export Full P&L</button></div>
-            {pl.skuRows.length>0&&<>
-              <div className="text-xs font-bold uppercase mb-2" style={{color:C.lightText}}>SKUs</div>
-              <div className="overflow-x-auto mb-4"><table className="w-full text-sm">
-                <thead><tr style={{color:C.lightText}}><th className="py-1.5 pr-3 text-left text-xs uppercase font-bold">Code</th><th className="py-1.5 pr-3 text-left text-xs uppercase font-bold">Name</th><th className="py-1.5 pr-3 text-left text-xs uppercase font-bold">Qty</th><th className="py-1.5 pr-3 text-left text-xs uppercase font-bold">Revenue</th><th className="py-1.5 pr-3 text-left text-xs uppercase font-bold">COGS</th><th className="py-1.5 pr-3 text-left text-xs uppercase font-bold">Gross Profit</th></tr></thead>
-                <tbody>{pl.skuRows.map(r=>(<tr key={r.code} className="border-t" style={{borderColor:C.border}}><td className="py-1.5 pr-3" style={{fontFamily:F.mono,fontWeight:600}}>{r.code}</td><td className="py-1.5 pr-3">{r.name}</td><td className="py-1.5 pr-3" style={{fontFamily:F.mono}}>{fmt(r.qty)}</td><td className="py-1.5 pr-3" style={{fontFamily:F.mono}}>{fmtINR(r.revenue)}</td><td className="py-1.5 pr-3" style={{fontFamily:F.mono}}>{fmtINR(r.cogs)}</td><td className="py-1.5 pr-3 font-bold" style={{fontFamily:F.mono,color:C.mintGreen}}>{fmtINR(r.revenue-r.cogs)}</td></tr>))}</tbody>
-              </table></div>
-            </>}
-            {pl.comboRows.length>0&&<>
-              <div className="text-xs font-bold uppercase mb-2" style={{color:C.lightText}}>Combos</div>
-              <div className="overflow-x-auto"><table className="w-full text-sm">
-                <thead><tr style={{color:C.lightText}}><th className="py-1.5 pr-3 text-left text-xs uppercase font-bold">Code</th><th className="py-1.5 pr-3 text-left text-xs uppercase font-bold">Name</th><th className="py-1.5 pr-3 text-left text-xs uppercase font-bold">Qty</th><th className="py-1.5 pr-3 text-left text-xs uppercase font-bold">Revenue</th><th className="py-1.5 pr-3 text-left text-xs uppercase font-bold">COGS</th><th className="py-1.5 pr-3 text-left text-xs uppercase font-bold">Gross Profit</th></tr></thead>
-                <tbody>{pl.comboRows.map(r=>(<tr key={r.code} className="border-t" style={{borderColor:C.border}}><td className="py-1.5 pr-3" style={{fontFamily:F.mono,fontWeight:600}}>{r.code}</td><td className="py-1.5 pr-3">{r.name}</td><td className="py-1.5 pr-3" style={{fontFamily:F.mono}}>{fmt(r.qty)}</td><td className="py-1.5 pr-3" style={{fontFamily:F.mono}}>{fmtINR(r.revenue)}</td><td className="py-1.5 pr-3" style={{fontFamily:F.mono}}>{fmtINR(r.cogs)}</td><td className="py-1.5 pr-3 font-bold" style={{fontFamily:F.mono,color:C.mintGreen}}>{fmtINR(r.revenue-r.cogs)}</td></tr>))}</tbody>
-              </table></div>
-            </>}
+            {pl.skuRows.length>0&&<PLSortableTable rows={pl.skuRows.map(r=>({...r,gp:r.revenue-r.cogs}))} title="SKUs"/>}
+            {pl.comboRows.length>0&&<PLSortableTable rows={pl.comboRows.map(r=>({...r,gp:r.revenue-r.cogs}))} title="Combos"/>}
             {pl.skuRows.length===0&&pl.comboRows.length===0&&<p className="text-sm" style={{color:C.lightText}}>No sales recorded for this period.</p>}
           </Card>
 
@@ -2774,7 +2826,11 @@ function FinancialsView({investors,setInvestors,investments,setInvestments,expen
       },[]);
       const filtered=entries.filter(e=>(!fromDate||e.date>=fromDate)&&(!toDate||e.date<=toDate));
       let running=0;
-      const withBalance=filtered.map(e=>{running+=e.in-e.out;return{...e,balance:running};});
+      const withBalance=filtered.map((e,i)=>{running+=e.in-e.out;return{...e,id:i,balance:running};});
+      // Balance is computed chronologically above (as it must be — it's a running
+      // total), but the table itself can still be sorted by any column for display;
+      // each row keeps the balance value that was true as of its own date.
+      const{sorted,sortKey,sortDir,toggleSort}=useSortableRows(withBalance,"date","asc");
 
       function exportLedger(){
         let csv="Date,Description,Money In,Money Out,Balance\n";
@@ -2785,7 +2841,7 @@ function FinancialsView({investors,setInvestors,investments,setInvestments,expen
       return(
         <div>
           <div className="mb-4 p-3 rounded-xl text-xs" style={{backgroundColor:C.bgLight,color:C.lightText}}>
-            <strong>What this shows:</strong> every investment, income entry, and expense in date order with a running balance — like a cash book. This tracks actual money in/out as you've logged it, not accrual-based sales revenue (see P&L Statement for that).
+            <strong>What this shows:</strong> every investment, income entry, and expense in date order with a running balance — like a cash book. This tracks actual money in/out as you've logged it, not accrual-based sales revenue (see P&L Statement for that). Click any column heading to sort.
           </div>
           <div className="flex flex-wrap items-end gap-2 mb-4">
             <div><label className="text-xs font-bold uppercase block mb-1" style={{color:C.lightText}}>From</label><Input type="date" value={fromDate} onChange={e=>setFromDate(e.target.value)}/></div>
@@ -2797,9 +2853,15 @@ function FinancialsView({investors,setInvestors,investments,setInvestments,expen
           {withBalance.length===0?<Empty icon={Calendar} title="No entries in this range" message="Add investments, income, or expenses, or widen the date filter."/>:(
             <Card>
               <div className="overflow-x-auto"><table className="w-full text-sm">
-                <thead><tr style={{color:C.lightText}}><th className="py-2 pr-3 text-left text-xs uppercase font-bold">Date</th><th className="py-2 pr-3 text-left text-xs uppercase font-bold">Description</th><th className="py-2 pr-3 text-left text-xs uppercase font-bold">In</th><th className="py-2 pr-3 text-left text-xs uppercase font-bold">Out</th><th className="py-2 pr-3 text-left text-xs uppercase font-bold">Balance</th></tr></thead>
-                <tbody>{withBalance.map((e,i)=>(
-                  <tr key={i} className="border-t" style={{borderColor:C.border}}>
+                <thead><tr>
+                  <SortTH label="Date" sortKey="date" activeKey={sortKey} dir={sortDir} onClick={toggleSort}/>
+                  <SortTH label="Description" sortKey="desc" activeKey={sortKey} dir={sortDir} onClick={toggleSort}/>
+                  <SortTH label="In" sortKey="in" activeKey={sortKey} dir={sortDir} onClick={toggleSort}/>
+                  <SortTH label="Out" sortKey="out" activeKey={sortKey} dir={sortDir} onClick={toggleSort}/>
+                  <SortTH label="Balance" sortKey="balance" activeKey={sortKey} dir={sortDir} onClick={toggleSort}/>
+                </tr></thead>
+                <tbody>{sorted.map((e)=>(
+                  <tr key={e.id} className="border-t" style={{borderColor:C.border}}>
                     <td className="py-2 pr-3" style={{fontFamily:F.mono,color:C.lightText}}>{e.date}</td>
                     <td className="py-2 pr-3">{e.desc}</td>
                     <td className="py-2 pr-3" style={{fontFamily:F.mono,color:e.in?C.mintGreen:C.lightText}}>{e.in?fmtINR(e.in):"—"}</td>
@@ -2846,6 +2908,93 @@ function FinancialsView({investors,setInvestors,investments,setInvestments,expen
               );
             })}
           </div>
+        </div>
+      );
+    }
+
+    // ── Investor-wise ──
+    function InvestorWiseView(){
+      const [expandedId,setExpandedId]=useState(null);
+      const perInvestor=useMemo(()=>{
+        return investors.map(inv=>{
+          const invTx=investments.filter(t=>t.investorId===inv.id);
+          const coveredExpenses=expenses.filter(e=>e.spentBy===inv.id);
+          const totalInvested=invTx.reduce((s,t)=>s+Number(t.amount||0),0);
+          const totalCovered=coveredExpenses.reduce((s,e)=>s+Number(e.amount||0),0);
+          const timeline=[
+            ...invTx.map(t=>({date:t.date,desc:`Investment${t.fromExpenseId?" (auto — covered expense)":""}`,amount:t.amount,paymentMode:t.paymentMode,comment:t.comment})),
+            ...coveredExpenses.map(e=>({date:e.date,desc:`Covered expense — ${e.head}`,amount:e.amount,paymentMode:e.paymentMode,comment:e.comment})),
+          ].sort((a,b)=>new Date(a.date)-new Date(b.date));
+          return{...inv,totalInvested,totalCovered,combined:totalInvested,txCount:timeline.length,timeline}; // note: auto-linked investments already fold covered-expense amounts into totalInvested, so "combined" = totalInvested (no separate addition needed, avoids double counting)
+        }).sort((a,b)=>b.combined-a.combined);
+      },[]);
+
+      const{sorted,sortKey,sortDir,toggleSort}=useSortableRows(perInvestor,"combined","desc");
+
+      function exportInvestor(inv){
+        let csv=`Investor Report — ${inv.name}\n\nDate,Description,Amount,Payment Mode,Comment\n`;
+        inv.timeline.forEach(t=>csv+=`${t.date},"${t.desc}",${Number(t.amount||0).toFixed(2)},${t.paymentMode||""},"${t.comment||""}"\n`);
+        csv+=`\nTotal Invested (includes expenses they covered),${inv.totalInvested.toFixed(2)}\n`;
+        downloadCsv(`investor_report_${inv.name.replace(/\s+/g,"_")}.csv`,csv);
+      }
+      function exportAllInvestors(){
+        let csv="Name,Contact,Total Invested,Expenses Covered (₹),# Transactions\n";
+        sorted.forEach(inv=>csv+=`"${inv.name}","${inv.contact||""}",${inv.totalInvested.toFixed(2)},${inv.totalCovered.toFixed(2)},${inv.timeline.length}\n`);
+        downloadCsv("investors_summary.csv",csv);
+      }
+
+      if(!investors.length)return<Empty icon={Users} title="No investors yet" message="Add investors in the Investors tab to see per-investor reports."/>;
+
+      return(
+        <div>
+          <div className="mb-4 p-3 rounded-xl text-xs" style={{backgroundColor:C.bgLight,color:C.lightText}}>
+            <strong>What this shows:</strong> for each investor, their total contribution — direct fund transfers plus any expenses they personally covered (which already count toward their investment total, so nothing here is double-counted). Click a row to see their full transaction history.
+          </div>
+          <div className="flex justify-end mb-3"><button onClick={exportAllInvestors} className="inline-flex items-center gap-1 text-xs font-bold" style={{color:C.zenkyOrange}}><Download size={13}/>Export Summary (All Investors)</button></div>
+          <Card>
+            <div className="overflow-x-auto"><table className="w-full text-sm">
+              <thead><tr>
+                <SortTH label="Name" sortKey="name" activeKey={sortKey} dir={sortDir} onClick={toggleSort}/>
+                <SortTH label="Total Invested" sortKey="totalInvested" activeKey={sortKey} dir={sortDir} onClick={toggleSort}/>
+                <SortTH label="Of Which: Covered Expenses" sortKey="totalCovered" activeKey={sortKey} dir={sortDir} onClick={toggleSort}/>
+                <SortTH label="Transactions" sortKey="txCount" activeKey={sortKey} dir={sortDir} onClick={toggleSort} className="hidden sm:table-cell"/>
+                <th/>
+              </tr></thead>
+              <tbody>{sorted.map(inv=>{
+                const isOpen=expandedId===inv.id;
+                return(
+                  <Fragment key={inv.id}>
+                    <tr className="border-t cursor-pointer" style={{borderColor:C.border}} onClick={()=>setExpandedId(isOpen?null:inv.id)}>
+                      <td className="py-2 pr-3 font-bold"><span className="inline-flex items-center gap-1.5">{isOpen?<ChevronDown size={14}/>:<ChevronRight size={14}/>}{inv.name}</span></td>
+                      <td className="py-2 pr-3 font-bold" style={{fontFamily:F.mono,color:C.zenkyPurple}}>{fmtINR(inv.totalInvested)}</td>
+                      <td className="py-2 pr-3" style={{fontFamily:F.mono,color:C.lightText}}>{inv.totalCovered>0?fmtINR(inv.totalCovered):"—"}</td>
+                      <td className="py-2 pr-3 hidden sm:table-cell" style={{color:C.lightText}}>{inv.timeline.length}</td>
+                      <td className="py-2 pr-3 text-right"><button onClick={ev=>{ev.stopPropagation();exportInvestor(inv);}} className="text-xs font-bold" style={{color:C.zenkyOrange}}><Download size={13}/></button></td>
+                    </tr>
+                    {isOpen&&(
+                      <tr><td colSpan={5} className="pb-3">
+                        <div className="rounded-xl p-3" style={{backgroundColor:C.bgLight}}>
+                          {inv.timeline.length===0?<p className="text-xs" style={{color:C.lightText}}>No transactions yet.</p>:(
+                            <table className="w-full text-xs">
+                              <thead><tr style={{color:C.lightText}}><th className="py-1 pr-3 text-left font-bold uppercase">Date</th><th className="py-1 pr-3 text-left font-bold uppercase">Description</th><th className="py-1 pr-3 text-left font-bold uppercase">Amount</th><th className="py-1 pr-3 text-left font-bold uppercase">Comment</th></tr></thead>
+                              <tbody>{inv.timeline.map((t,i)=>(
+                                <tr key={i} className="border-t" style={{borderColor:C.border}}>
+                                  <td className="py-1.5 pr-3" style={{fontFamily:F.mono,color:C.lightText}}>{t.date}</td>
+                                  <td className="py-1.5 pr-3">{t.desc}</td>
+                                  <td className="py-1.5 pr-3 font-bold" style={{fontFamily:F.mono,color:C.zenkyPurple}}>{fmtINR(t.amount)}</td>
+                                  <td className="py-1.5 pr-3" style={{color:C.lightText}}>{t.comment||"—"}</td>
+                                </tr>
+                              ))}</tbody>
+                            </table>
+                          )}
+                        </div>
+                      </td></tr>
+                    )}
+                  </Fragment>
+                );
+              })}</tbody>
+            </table></div>
+          </Card>
         </div>
       );
     }
@@ -2947,7 +3096,103 @@ function FinancialsView({investors,setInvestors,investments,setInvestments,expen
         {reportTab==="pl"&&<PLView pl={overallPL} label="Overall (All Time)"/>}
         {reportTab==="datewise"&&<DateWiseLedger/>}
         {reportTab==="fy"&&<FinancialYearView/>}
+        {reportTab==="investorwise"&&<InvestorWiseView/>}
         {reportTab==="monthly"&&<MonthlyView/>}
+      </div>
+    );
+  }
+
+  // ── Investor Statement — a dedicated, presentable, branded page shown when an investor's name is clicked ──
+  function InvestorStatementView(){
+    const inv=investors.find(i=>i.id===viewingInvestorId);
+    if(!inv)return null;
+    const timeline=useMemo(()=>{
+      const invTx=investments.filter(t=>t.investorId===inv.id);
+      const coveredExpenses=expenses.filter(e=>e.spentBy===inv.id);
+      return[
+        ...invTx.map(t=>({date:t.date,desc:`Investment${t.fromExpenseId?" (covered expense, auto-logged)":""}`,paymentMode:t.paymentMode,comment:t.comment,amount:Number(t.amount||0)})),
+        ...coveredExpenses.map(e=>({date:e.date,desc:`Covered expense — ${e.head}`,paymentMode:e.paymentMode,comment:e.comment,amount:Number(e.amount||0)})),
+      ].sort((a,b)=>new Date(a.date)-new Date(b.date));
+    },[]);
+    const total=timeline.reduce((s,t)=>s+t.amount,0);
+
+    function exportStatement(){
+      let csv=`ZenkyBox — Investor Statement\nInvestor: ${inv.name}\nGenerated: ${new Date().toLocaleDateString("en-IN")}\n\n`;
+      csv+="Date,Description,Payment Mode,Amount,Comment\n";
+      timeline.forEach(t=>csv+=`${t.date},"${t.desc}",${t.paymentMode||""},${t.amount.toFixed(2)},"${t.comment||""}"\n`);
+      csv+=`\nTotal Invested,${total.toFixed(2)}\n`;
+      downloadCsv(`ZenkyBox_Investor_Statement_${inv.name.replace(/\s+/g,"_")}.csv`,csv);
+      logActivity?.("Investor statement exported",inv.name);
+    }
+
+    return(
+      <div>
+        <button onClick={()=>setViewingInvestorId(null)} className="inline-flex items-center gap-1 text-sm font-bold mb-5" style={{color:C.lightText}}><ChevronRight size={14} style={{transform:"rotate(180deg)"}}/>Back to Investors</button>
+
+        <div className="rounded-2xl border-2 overflow-hidden" style={{borderColor:C.border,backgroundColor:C.softWhite}}>
+          {/* Branded header */}
+          <div className="p-6 sm:p-8 text-center" style={{backgroundColor:C.bgLight,borderBottom:`2px solid ${C.border}`}}>
+            <img src="/zenkybox-wordmark.png" alt="ZenkyBox" style={{height:"36px",margin:"0 auto 12px"}}/>
+            <div className="text-xs font-bold uppercase" style={{color:C.lightText,letterSpacing:"0.08em"}}>zenkybox.in · Investor Statement</div>
+          </div>
+
+          <div className="p-6 sm:p-8">
+            <div className="flex items-start justify-between flex-wrap gap-4 mb-6">
+              <div>
+                <div className="text-2xl font-black" style={{fontFamily:F.display,color:C.darkText}}>{inv.name}</div>
+                {inv.contact&&<div className="text-sm mt-1" style={{color:C.lightText}}>{inv.contact}</div>}
+                {inv.notes&&<div className="text-sm mt-0.5" style={{color:C.lightText}}>{inv.notes}</div>}
+              </div>
+              <div className="text-right">
+                <div className="text-xs font-bold uppercase" style={{color:C.lightText}}>Statement Date</div>
+                <div className="text-sm font-bold" style={{color:C.darkText}}>{new Date().toLocaleDateString("en-IN",{day:"2-digit",month:"long",year:"numeric"})}</div>
+              </div>
+            </div>
+
+            <div className="rounded-xl p-4 mb-6 flex items-center justify-between" style={{backgroundColor:C.bgLight}}>
+              <span className="font-bold" style={{fontFamily:F.display,color:C.darkText}}>Total Invested</span>
+              <span className="text-2xl font-black" style={{fontFamily:F.display,color:C.zenkyPurple}}>{fmtINR(total)}</span>
+            </div>
+
+            <div className="flex items-center justify-between mb-3">
+              <h3 className="font-bold text-lg" style={{fontFamily:F.display,color:C.darkText}}>Date-wise Investment History</h3>
+              <button onClick={exportStatement} className="inline-flex items-center gap-1.5 text-xs font-bold" style={{color:C.zenkyOrange}}><Download size={13}/>Export Statement</button>
+            </div>
+
+            {timeline.length===0?(
+              <Empty icon={IndianRupee} title="No transactions yet" message="Log an investment for this person, or check back once they've covered an expense."/>
+            ):(
+              <div className="overflow-x-auto"><table className="w-full text-sm">
+                <thead><tr style={{color:C.lightText}}>
+                  <th className="py-2 pr-3 text-left text-xs uppercase font-bold">Date</th>
+                  <th className="py-2 pr-3 text-left text-xs uppercase font-bold">Description</th>
+                  <th className="py-2 pr-3 text-left text-xs uppercase font-bold hidden sm:table-cell">Mode</th>
+                  <th className="py-2 pr-3 text-left text-xs uppercase font-bold">Amount</th>
+                  <th className="py-2 pr-3 text-left text-xs uppercase font-bold hidden sm:table-cell">Comment</th>
+                </tr></thead>
+                <tbody>{timeline.map((t,i)=>(
+                  <tr key={i} className="border-t" style={{borderColor:C.border}}>
+                    <td className="py-2.5 pr-3" style={{fontFamily:F.mono,color:C.lightText}}>{t.date}</td>
+                    <td className="py-2.5 pr-3">{t.desc}</td>
+                    <td className="py-2.5 pr-3 hidden sm:table-cell">{t.paymentMode?<Stamp tone="blue">{t.paymentMode}</Stamp>:"—"}</td>
+                    <td className="py-2.5 pr-3 font-bold" style={{fontFamily:F.mono,color:C.zenkyPurple}}>{fmtINR(t.amount)}</td>
+                    <td className="py-2.5 pr-3 hidden sm:table-cell" style={{color:C.lightText}}>{t.comment||"—"}</td>
+                  </tr>
+                ))}</tbody>
+                <tfoot><tr style={{borderTop:`2px solid ${C.border}`}}>
+                  <td colSpan={3} className="py-3 pr-3 font-bold hidden sm:table-cell" style={{fontFamily:F.display,color:C.darkText}}>Total</td>
+                  <td colSpan={2} className="py-3 pr-3 font-bold sm:hidden" style={{fontFamily:F.display,color:C.darkText}}>Total</td>
+                  <td className="py-3 pr-3 font-black" style={{fontFamily:F.mono,color:C.zenkyPurple}}>{fmtINR(total)}</td>
+                  <td className="hidden sm:table-cell"/>
+                </tr></tfoot>
+              </table></div>
+            )}
+          </div>
+
+          <div className="px-6 sm:px-8 py-4 text-center text-xs" style={{backgroundColor:C.bgLight,color:C.lightText,borderTop:`2px solid ${C.border}`}}>
+            💝 Thoughtful Gifts. Joyful Moments. — ZenkyBox.in
+          </div>
+        </div>
       </div>
     );
   }
@@ -2955,18 +3200,22 @@ function FinancialsView({investors,setInvestors,investments,setInvestments,expen
   return(
     <div>
       <SectionHeader title="Financials" subtitle="Investors, expenses, income, and overall fund balance."/>
-      <div className="flex gap-1.5 mb-6 overflow-x-auto pb-1">
-        {TABS.map(t=>(
-          <button key={t.id} onClick={()=>setTab(t.id)} className="px-3.5 py-2 rounded-full text-xs font-bold whitespace-nowrap transition-colors" style={{backgroundColor:tab===t.id?C.zenkyPurple:C.softWhite,color:tab===t.id?C.softWhite:C.darkText,border:`2px solid ${tab===t.id?C.zenkyPurple:C.border}`,fontFamily:F.display}}>
-            {t.label}
-          </button>
-        ))}
-      </div>
-      {tab==="overview"&&<Overview/>}
-      {tab==="investors"&&<Investors/>}
-      {tab==="expenses"&&<Expenses/>}
-      {tab==="income"&&<Income/>}
-      {tab==="reports"&&<Reports/>}
+      {viewingInvestorId?<InvestorStatementView/>:(
+        <>
+          <div className="flex gap-1.5 mb-6 overflow-x-auto pb-1">
+            {TABS.map(t=>(
+              <button key={t.id} onClick={()=>setTab(t.id)} className="px-3.5 py-2 rounded-full text-xs font-bold whitespace-nowrap transition-colors" style={{backgroundColor:tab===t.id?C.zenkyPurple:C.softWhite,color:tab===t.id?C.softWhite:C.darkText,border:`2px solid ${tab===t.id?C.zenkyPurple:C.border}`,fontFamily:F.display}}>
+                {t.label}
+              </button>
+            ))}
+          </div>
+          {tab==="overview"&&<Overview/>}
+          {tab==="investors"&&<Investors/>}
+          {tab==="expenses"&&<Expenses/>}
+          {tab==="income"&&<Income/>}
+          {tab==="reports"&&<Reports/>}
+        </>
+      )}
     </div>
   );
 }
