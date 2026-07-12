@@ -31,7 +31,7 @@ const DEFAULT_LOGIN = { username: "admin", password: "zenkybox123" }; // used on
 // don't need) — Returns & Refunds, Salary & Wages, Payment Gateway/Bank
 // Charges, and Software & Hosting (beyond just AI/Meta subscriptions).
 const EXPENSE_HEADS = [
-  "Product Procurement","Ad Expenses","Packaging Expenses","Branding Expenses",
+  "Product Procurement","Ad Expenses","Packaging Expenses","Shipping & Courier Charges","Branding Expenses",
   "Travel Expenses","Food Expenses","Taxes","Registration Fee","Trademark Registration Fee",
   "AI Subscription","Meta Subscription",
   "Salary & Wages","Payment Gateway / Bank Charges","Returns & Refunds","Software & Hosting",
@@ -50,6 +50,7 @@ const NAV = [
   { id:"reports",         label:"Reports",           icon:FileText,        adminOnly:false },
   { id:"sales-reports",   label:"ZenkyBox Sales Report", icon:BarChart3,   adminOnly:false },
   { id:"costing",         label:"Costing & Pricing", icon:Calculator,      adminOnly:true  },
+  { id:"profit-calc",     label:"Profit Calculator", icon:TrendingUp,      adminOnly:true  },
   { id:"financials",      label:"Financials",        icon:IndianRupee,     adminOnly:true  },
   { id:"source-data",     label:"Source Data",       icon:Database,        adminOnly:true  },
   { id:"access",          label:"Access Management", icon:Users,           adminOnly:true  },
@@ -1097,13 +1098,15 @@ function BulkImportView({skus,combos,setSkus,setCombos,showToast,logActivity}){
 }
 
 /* ═══ UPLOAD SALES ═══ */
-function UploadView({skus,combos,setSkus,reports,setReports,salesLines,setSalesLines,logActivity,showToast}){
+function UploadView({skus,combos,setSkus,reports,setReports,salesLines,setSalesLines,financialSettings,logActivity,showToast}){
   const [channel,setChannel]=useState("amazon"); // "amazon" | "website"
   const [entryMode,setEntryMode]=useState("file"); // "file" | "manual"
   const [stage,setStage]=useState("idle");const [fileName,setFileName]=useState("");
   const [rawRows,setRawRows]=useState([]);const [extraCols,setExtraCols]=useState({});
   const [repairNote,setRepairNote]=useState(null);
   const [skipDuplicates,setSkipDuplicates]=useState(true);
+  const [bulkPackagingCost,setBulkPackagingCost]=useState(financialSettings?.defaultPackagingCost||"");
+  const [bulkShippingCost,setBulkShippingCost]=useState(financialSettings?.defaultShippingCost||"");
   const [weekLabel,setWeekLabel]=useState("");const ref=useRef(null);
   const skuMap=useMemo(()=>Object.fromEntries(skus.map(s=>[s.sku,s])),[skus]);
   const comboMap=useMemo(()=>Object.fromEntries(combos.map(c=>[c.sku,c])),[combos]);
@@ -1174,6 +1177,13 @@ function UploadView({skus,combos,setSkus,reports,setReports,salesLines,setSalesL
 
   function applyReport(){
     if(!weekLabel.trim()){showToast("error","Add a report label.");return;}
+    // Website uploads must have packaging and shipping cost recorded — real
+    // per-order costs that directly affect true profit, same requirement as
+    // the manual single-order entry.
+    if(channel==="website"){
+      if(bulkPackagingCost===""||Number(bulkPackagingCost)<0){showToast("error","Enter the packaging cost per unit before applying.");return;}
+      if(bulkShippingCost===""||Number(bulkShippingCost)<0){showToast("error","Enter the shipping/courier cost per unit before applying.");return;}
+    }
     const skippedCount=duplicateOrderIds.size;
     const skuBefore={};skus.forEach(s=>skuBefore[s.sku]=s.stock);
     const updated=Object.fromEntries(skus.map(s=>[s.sku,{...s}]));
@@ -1186,21 +1196,24 @@ function UploadView({skus,combos,setSkus,reports,setReports,salesLines,setSalesL
       unmatched:aggregated.filter(a=>a.matchType==="unknown"),
       skippedDuplicates:skippedCount};
 
+    const packagingPerUnit=channel==="website"?Number(bulkPackagingCost)||0:0;
+    const shippingPerUnit=channel==="website"?Number(bulkShippingCost)||0:0;
     const newLines=effectiveRows.map((row,i)=>{
       const combo=comboMap[row.sku],sku=skuMap[row.sku];
       const matchType=combo?"combo":sku?"direct":"unknown";
       const name=combo?.name||sku?.name||row.sku;
       const unitCost=unitCostOf(row.sku,matchType,skuMap,comboMap);
-      const cost=unitCost*row.qty;
+      const packagingCost=packagingPerUnit*row.qty,shippingCost=shippingPerUnit*row.qty;
+      const cost=(unitCost*row.qty)+packagingCost+shippingCost;
       const revenue=row.price!=null&&!isNaN(row.price)?row.price*row.qty:0;
-      return{id:`${reportId}-${i}`,reportId,channel,date:row.date||report.appliedAt,sku:row.sku,name,matchType,qty:row.qty,unitCost,cost,revenue,earning:revenue-cost,orderId:row.orderId||"",buyer:row.buyer||"",city:row.city||"",state:row.state||""};
+      return{id:`${reportId}-${i}`,reportId,channel,date:row.date||report.appliedAt,sku:row.sku,name,matchType,qty:row.qty,unitCost,cost,revenue,earning:revenue-cost,orderId:row.orderId||"",buyer:row.buyer||"",city:row.city||"",state:row.state||"",packagingCost,shippingCost};
     });
 
     setSkus(newSkus);setReports([report,...reports]);setSalesLines([...salesLines,...newLines]);
-    logActivity?.("Sales report applied",`[${channel}] "${weekLabel.trim()}" — ${fileName} (${aggregated.length} codes, ${newLines.length} order lines${skippedCount?`, ${skippedCount} duplicate orders skipped`:""})`);
+    logActivity?.("Sales report applied",`[${channel}] "${weekLabel.trim()}" — ${fileName} (${aggregated.length} codes, ${newLines.length} order lines${skippedCount?`, ${skippedCount} duplicate orders skipped`:""}${channel==="website"?`, packaging ${fmtINR(packagingPerUnit)}/unit + shipping ${fmtINR(shippingPerUnit)}/unit`:""})`);
     setStage("applied");showToast("success",skippedCount?`Inventory updated — ${skippedCount} duplicate order(s) skipped. 📊`:"Inventory updated. 📊");
   }
-  function reset(){setStage("idle");setRawRows([]);setFileName("");setWeekLabel("");setRepairNote(null);setSkipDuplicates(true);if(ref.current)ref.current.value="";}
+  function reset(){setStage("idle");setRawRows([]);setFileName("");setWeekLabel("");setRepairNote(null);setSkipDuplicates(true);setBulkPackagingCost(financialSettings?.defaultPackagingCost||"");setBulkShippingCost(financialSettings?.defaultShippingCost||"");if(ref.current)ref.current.value="";}
 
   function downloadWebsiteTemplate(){
     const csv="sku,quantity,item-price,purchase-date,buyer-name,buyer-email,ship-city,ship-state\n"+
@@ -1239,7 +1252,7 @@ function UploadView({skus,combos,setSkus,reports,setReports,salesLines,setSalesL
       </div>
 
       {entryMode==="manual"?(
-        <AddOrderForm channel={channel} skus={skus} combos={combos} setSkus={setSkus} reports={reports} setReports={setReports} salesLines={salesLines} setSalesLines={setSalesLines} logActivity={logActivity} showToast={showToast}/>
+        <AddOrderForm channel={channel} skus={skus} combos={combos} setSkus={setSkus} reports={reports} setReports={setReports} salesLines={salesLines} setSalesLines={setSalesLines} financialSettings={financialSettings} logActivity={logActivity} showToast={showToast}/>
       ):(
       <Card>
         {stage==="idle"&&(
@@ -1292,6 +1305,16 @@ function UploadView({skus,combos,setSkus,reports,setReports,salesLines,setSalesL
             {skipDuplicates&&duplicateOrderIds.size>0?`Showing ${aggregated.length} codes from ${effectiveRows.length} order lines (${duplicateOrderIds.size} duplicate orders excluded)`:`${aggregated.length} codes from ${effectiveRows.length} order lines`}
           </div>
           <div className="overflow-x-auto mb-4"><table className="w-full text-sm"><thead><tr style={{color:C.lightText}}><th className="py-2 pr-3 text-left font-bold text-xs uppercase">Code</th><th className="py-2 pr-3 text-left font-bold text-xs uppercase">Qty</th><th className="py-2 pr-3 text-left font-bold text-xs uppercase">Type</th><th className="py-2 pr-3 text-left font-bold text-xs uppercase">Name</th></tr></thead><tbody>{aggregated.map(a=><tr key={a.code} className="border-t" style={{borderColor:C.border}}><td className="py-2 pr-3" style={{fontFamily:F.mono,fontWeight:600}}>{a.code}</td><td className="py-2 pr-3" style={{fontFamily:F.mono}}>{fmt(a.qty)}</td><td className="py-2 pr-3">{a.matchType==="combo"?<Stamp tone="mint">Combo</Stamp>:a.matchType==="direct"?<Stamp tone="purple">SKU</Stamp>:<Stamp tone="pink">Unknown</Stamp>}</td><td className="py-2 pr-3" style={{color:a.matchType==="unknown"?C.zenkyPink:C.darkText}}>{a.matchName}</td></tr>)}</tbody></table></div>
+          {channel==="website"&&(
+            <div className="mb-4 p-3 rounded-xl" style={{backgroundColor:"#FFF3E6"}}>
+              <p className="text-xs font-bold mb-2" style={{color:"#9a5b0f"}}>Required — packaging and shipping cost per unit for this batch (applies to every order in this upload):</p>
+              <div className="grid grid-cols-2 gap-2">
+                <div className="relative"><span className="absolute left-3 top-2.5 text-sm" style={{color:C.lightText}}>₹</span><Input placeholder="Packaging cost / unit" type="number" className="pl-6" value={bulkPackagingCost} onChange={e=>setBulkPackagingCost(e.target.value)}/></div>
+                <div className="relative"><span className="absolute left-3 top-2.5 text-sm" style={{color:C.lightText}}>₹</span><Input placeholder="Shipping cost / unit" type="number" className="pl-6" value={bulkShippingCost} onChange={e=>setBulkShippingCost(e.target.value)}/></div>
+              </div>
+              <p className="text-xs mt-2" style={{color:"#9a5b0f"}}>Pre-filled from Financials → Channel Cost Settings. If costs vary a lot per order, consider uploading in smaller batches by cost tier, or adjust individual figures later via the Profit Calculator.</p>
+            </div>
+          )}
           <div className="flex items-end gap-3 flex-wrap"><div className="w-full sm:w-64"><label className="text-xs font-bold block mb-1" style={{color:C.lightText}}>Report label</label><Input placeholder="e.g. Week of Jun 16–22" value={weekLabel} onChange={e=>setWeekLabel(e.target.value)}/></div><PrimaryButton onClick={applyReport}><Check size={15}/>Apply to inventory</PrimaryButton></div></div>)}
         {stage==="applied"&&(<div className="text-center py-8"><Check size={32} className="mx-auto mb-3" style={{color:C.mintGreen}}/><p className="font-bold text-lg" style={{color:C.darkText,fontFamily:F.display}}>Report applied</p><p className="text-sm mt-1" style={{color:C.lightText}}>View breakdown in Reports tab, or full analytics in ZenkyBox Sales Report.</p><div className="mt-5"><PrimaryButton onClick={reset}><Upload size={15}/>Upload another</PrimaryButton></div></div>)}
       </Card>
@@ -1301,8 +1324,8 @@ function UploadView({skus,combos,setSkus,reports,setReports,salesLines,setSalesL
 }
 
 /* ═══ MANUAL SINGLE-ORDER ENTRY (for website orders without a bulk export) ═══ */
-function AddOrderForm({channel,skus,combos,setSkus,reports,setReports,salesLines,setSalesLines,logActivity,showToast}){
-  const blank={code:"",qty:1,price:"",orderId:"",buyerName:"",buyerEmail:"",city:"",state:"",date:new Date().toISOString().slice(0,10)};
+function AddOrderForm({channel,skus,combos,setSkus,reports,setReports,salesLines,setSalesLines,financialSettings,logActivity,showToast}){
+  const blank={code:"",qty:1,price:"",orderId:"",buyerName:"",buyerEmail:"",city:"",state:"",date:new Date().toISOString().slice(0,10),packagingCost:financialSettings?.defaultPackagingCost||"",shippingCost:financialSettings?.defaultShippingCost||""};
   const [form,setForm]=useState(blank);
   const skuMap=useMemo(()=>Object.fromEntries(skus.map(s=>[s.sku,s])),[skus]);
   const comboMap=useMemo(()=>Object.fromEntries(combos.map(c=>[c.sku,c])),[combos]);
@@ -1316,6 +1339,13 @@ function AddOrderForm({channel,skus,combos,setSkus,reports,setReports,salesLines
     const qty=Number(form.qty)||0;
     if(!code){showToast("error","Choose a SKU or combo.");return;}
     if(qty<=0){showToast("error","Quantity must be greater than 0.");return;}
+    // Website orders must have packaging and shipping cost recorded — these are
+    // real per-order costs that directly affect true profit, and without them
+    // Sales Report would silently understate what this order actually cost you.
+    if(channel==="website"){
+      if(form.packagingCost===""||Number(form.packagingCost)<0){showToast("error","Enter the packaging cost for this order.");return;}
+      if(form.shippingCost===""||Number(form.shippingCost)<0){showToast("error","Enter the shipping/courier cost for this order.");return;}
+    }
     const combo=comboMap[code],sku=skuMap[code];
     if(!combo&&!sku){showToast("error",`"${code}" not found in Catalog or Combos.`);return;}
     const matchType=combo?"combo":"direct";
@@ -1331,7 +1361,11 @@ function AddOrderForm({channel,skus,combos,setSkus,reports,setReports,salesLines
     const bMap=Object.fromEntries(skus.map(s=>[s.sku,s])),aMap=Object.fromEntries(newSkus.map(s=>[s.sku,s]));
 
     const unitCost=unitCostOf(code,matchType,skuMap,comboMap);
-    const cost=unitCost*qty;
+    // For Website, fold packaging + shipping into the true per-line cost, so
+    // Sales Report's Earning reflects real profit, not just COGS-based margin.
+    const packagingCost=channel==="website"?Number(form.packagingCost)||0:0;
+    const shippingCost=channel==="website"?Number(form.shippingCost)||0:0;
+    const cost=(unitCost*qty)+packagingCost+shippingCost;
     const price=form.price!==""?Number(form.price):null;
     const revenue=price!=null&&!isNaN(price)?price*qty:0;
     const dateIso=form.date?new Date(form.date).toISOString():new Date().toISOString();
@@ -1342,10 +1376,10 @@ function AddOrderForm({channel,skus,combos,setSkus,reports,setReports,salesLines
       comboLines:combos.map(c=>({sku:c.sku,name:c.name,readyBefore:comboReadiness(c,bMap).ready,readyAfter:comboReadiness(c,aMap).ready,bottleneck:comboReadiness(c,aMap).bottleneck})),
       unmatched:[],skippedDuplicates:0};
 
-    const newLine={id:`${reportId}-0`,reportId,channel,date:dateIso,sku:code,name,matchType,qty,unitCost,cost,revenue,earning:revenue-cost,orderId,buyer:form.buyerName.trim(),city:form.city.trim(),state:form.state.trim()};
+    const newLine={id:`${reportId}-0`,reportId,channel,date:dateIso,sku:code,name,matchType,qty,unitCost,cost,revenue,earning:revenue-cost,orderId,buyer:form.buyerName.trim(),city:form.city.trim(),state:form.state.trim(),packagingCost,shippingCost};
 
     setSkus(newSkus);setReports([report,...reports]);setSalesLines([...salesLines,newLine]);
-    logActivity?.("Order added manually",`[${channel}] ${orderId} — ${code} ×${qty}`);
+    logActivity?.("Order added manually",`[${channel}] ${orderId} — ${code} ×${qty}${channel==="website"?` (packaging ${fmtINR(packagingCost)}, shipping ${fmtINR(shippingCost)})`:""}`);
     showToast("success",`Order added — ${name} ×${qty}. 📝`);
     setForm({...blank,date:form.date}); // keep the date for quick consecutive entries
   }
@@ -1376,6 +1410,15 @@ function AddOrderForm({channel,skus,combos,setSkus,reports,setReports,salesLines
           <Input placeholder="City (optional)" value={form.city} onChange={e=>setForm({...form,city:e.target.value})}/>
           <Input placeholder="State (optional)" value={form.state} onChange={e=>setForm({...form,state:e.target.value})}/>
         </div>
+        {channel==="website"&&(
+          <div className="p-3 rounded-xl" style={{backgroundColor:"#FFF3E6"}}>
+            <p className="text-xs font-bold mb-2" style={{color:"#9a5b0f"}}>Required for Website orders — real per-order costs that affect true profit:</p>
+            <div className="grid grid-cols-2 gap-2">
+              <div className="relative"><span className="absolute left-3 top-2.5 text-sm" style={{color:C.lightText}}>₹</span><Input placeholder="Packaging cost" type="number" className="pl-6" value={form.packagingCost} onChange={e=>setForm({...form,packagingCost:e.target.value})}/></div>
+              <div className="relative"><span className="absolute left-3 top-2.5 text-sm" style={{color:C.lightText}}>₹</span><Input placeholder="Shipping/courier cost" type="number" className="pl-6" value={form.shippingCost} onChange={e=>setForm({...form,shippingCost:e.target.value})}/></div>
+            </div>
+          </div>
+        )}
       </div>
       <div className="mt-4"><PrimaryButton onClick={submitOrder}><Plus size={16}/>Add Order</PrimaryButton></div>
     </Card>
@@ -1561,6 +1604,239 @@ function CostingPricingView({skus}){
   );
 }
 
+/* ═══ PROFIT CALCULATOR — per-SKU/Combo, channel-aware (Amazon FBA/FBM vs Website) ═══ */
+const AMAZON_FEE_FIELDS=[
+  {key:"referralFee",label:"Referral Fee"},
+  {key:"closingFee",label:"Closing Fee"},
+  {key:"variableClosingFee",label:"Variable Closing Fee"},
+  {key:"fulfilmentCost",label:"Fulfilment Cost"},
+  {key:"storageCost",label:"Storage Cost"},
+  {key:"otherFees",label:"Other Fees, Discounts & Taxes on Fees"},
+  {key:"feeDiscounts",label:"Fee Discounts"},
+];
+const BLANK_CHANNEL={
+  weight:"",category:"",packagingCost:"",
+  fba:{sellingPrice:"",referralFee:"",closingFee:"",variableClosingFee:"",fulfilmentCost:"",storageCost:"",otherFees:"",feeDiscounts:""},
+  fbm:{sellingPrice:"",referralFee:"",closingFee:"",variableClosingFee:"",fulfilmentCost:"",storageCost:"",otherFees:"",feeDiscounts:""},
+  website:{sellingPrice:"",shippingCost:"",packagingCost:""},
+};
+
+/* Amazon math: Net Proceeds = Selling Price − (Referral+Closing+VariableClosing+Fulfilment+Storage+Other−FeeDiscounts) − 18% GST on those fees.
+   Matches Amazon's own Revenue Calculator exactly — we don't recompute their fees, we just total what you paste in from there. */
+function calcAmazonChannel(ch,cogs,packagingCost){
+  const n=v=>Number(v)||0;
+  const feesTotal=n(ch.referralFee)+n(ch.closingFee)+n(ch.variableClosingFee)+n(ch.fulfilmentCost)+n(ch.storageCost)+n(ch.otherFees)-n(ch.feeDiscounts);
+  const gst=feesTotal*0.18;
+  const netProceeds=n(ch.sellingPrice)-feesTotal-gst;
+  const netProfit=netProceeds-cogs-packagingCost;
+  const margin=n(ch.sellingPrice)>0?(netProfit/n(ch.sellingPrice))*100:0;
+  return{feesTotal,gst,netProceeds,netProfit,margin};
+}
+function calcWebsiteChannel(ch,cogs,gatewayPercent,gatewayFixed){
+  const n=v=>Number(v)||0;
+  const gatewayFee=n(ch.sellingPrice)*(n(gatewayPercent)/100)+n(gatewayFixed);
+  const netProceeds=n(ch.sellingPrice)-gatewayFee-n(ch.shippingCost);
+  const netProfit=netProceeds-cogs-n(ch.packagingCost);
+  const margin=n(ch.sellingPrice)>0?(netProfit/n(ch.sellingPrice))*100:0;
+  return{gatewayFee,netProceeds,netProfit,margin};
+}
+
+/* Reference-only lookup for Amazon's closing fee slabs — NOT used in any
+   calculation (per the framework: Amazon's own numbers are pasted in, since
+   fee slabs shift with each Amazon fee revision). This just saves a tab-switch
+   to remember roughly which band a price falls in before checking the real
+   figure on Amazon's Revenue Calculator. */
+function ClosingFeeReferenceCard(){
+  const [open,setOpen]=useState(false);
+  const slabs=[
+    {range:"Up to ₹250",fee:"~₹25"},
+    {range:"₹251 – ₹500",fee:"~₹24"},
+    {range:"₹501 – ₹1,000",fee:"~₹28"},
+    {range:"₹1,001 – ₹5,000",fee:"~₹50"},
+    {range:"Above ₹5,000",fee:"~₹60"},
+  ];
+  return(
+    <Card className="mb-4">
+      <button onClick={()=>setOpen(!open)} className="w-full flex items-center justify-between">
+        <span className="font-bold text-sm" style={{fontFamily:F.display,color:C.darkText}}>Closing Fee Reference (varies by price slab)</span>
+        {open?<ChevronDown size={16} style={{color:C.lightText}}/>:<ChevronRight size={16} style={{color:C.lightText}}/>}
+      </button>
+      {open&&(
+        <div className="mt-3">
+          <div className="overflow-x-auto"><table className="w-full text-sm">
+            <thead><tr style={{color:C.lightText}}><th className="py-1.5 pr-3 text-left text-xs uppercase font-bold">Selling Price</th><th className="py-1.5 pr-3 text-left text-xs uppercase font-bold">Typical Closing Fee</th></tr></thead>
+            <tbody>{slabs.map(s=>(
+              <tr key={s.range} className="border-t" style={{borderColor:C.border}}>
+                <td className="py-1.5 pr-3">{s.range}</td>
+                <td className="py-1.5 pr-3 font-bold" style={{fontFamily:F.mono,color:C.zenkyPurple}}>{s.fee}</td>
+              </tr>
+            ))}</tbody>
+          </table></div>
+          <p className="text-xs mt-2" style={{color:C.lightText}}>Approximate only, general categories — some categories (books/media, premium) fall outside this band, and FBA vs Easy Ship rate cards differ slightly. Always confirm the exact figure from Amazon's Revenue Calculator for this specific SKU before entering it below.</p>
+        </div>
+      )}
+    </Card>
+  );
+}
+
+function ProfitCalculatorView({skus,combos,channelProfitData,setChannelProfitData,financialSettings,logActivity,showToast}){
+  const [selectedCode,setSelectedCode]=useState(null);
+  const [channelTab,setChannelTab]=useState("fba");
+  const [query,setQuery]=useState("");
+  const [form,setForm]=useState(BLANK_CHANNEL);
+
+  const allProducts=useMemo(()=>[
+    ...skus.map(s=>({code:s.sku,name:s.name,type:"SKU",procurementCost:Number(s.procurementCost||0)})),
+    ...combos.map(c=>({code:c.sku,name:c.name,type:"Combo",procurementCost:c.components?.reduce((sum,comp)=>{const s=skus.find(x=>x.sku===comp.sku);return sum+(Number(s?.procurementCost||0)*(comp.qty||1));},0)||0})),
+  ],[skus,combos]);
+
+  const filtered=allProducts.filter(p=>!query.trim()||p.code.toLowerCase().includes(query.toLowerCase())||p.name.toLowerCase().includes(query.toLowerCase()));
+
+  function selectProduct(code){
+    setSelectedCode(code);
+    const existing=channelProfitData[code];
+    setForm(existing?{...BLANK_CHANNEL,...existing,fba:{...BLANK_CHANNEL.fba,...existing.fba},fbm:{...BLANK_CHANNEL.fbm,...existing.fbm},website:{...BLANK_CHANNEL.website,...existing.website}}:{
+      ...BLANK_CHANNEL,
+      packagingCost:financialSettings.defaultPackagingCost||"",
+      website:{...BLANK_CHANNEL.website,shippingCost:financialSettings.defaultShippingCost||"",packagingCost:financialSettings.defaultPackagingCost||""},
+    });
+  }
+
+  function save(){
+    setChannelProfitData({...channelProfitData,[selectedCode]:form});
+    logActivity?.("Profit calculator updated",selectedCode);
+    showToast("success","Saved. ✨");
+  }
+
+  const selected=allProducts.find(p=>p.code===selectedCode);
+  const cogs=selected?.procurementCost||0;
+  const fbaResult=calcAmazonChannel(form.fba,cogs,Number(form.packagingCost)||0);
+  const fbmResult=calcAmazonChannel(form.fbm,cogs,Number(form.packagingCost)||0);
+  const websiteResult=calcWebsiteChannel(form.website,cogs,financialSettings.gatewayFeePercent,financialSettings.gatewayFeeFixed);
+
+  return(
+    <div>
+      <SectionHeader title="Profit Calculator" subtitle="Real per-SKU and per-combo profit — Amazon FBA/FBM fees pasted from Amazon's own Revenue Calculator, Website fees computed from your Channel Cost Settings."/>
+
+      <div className="mb-4 p-3 rounded-xl text-xs" style={{backgroundColor:C.bgLight,color:C.lightText}}>
+        <strong>Why Amazon fees are entered manually:</strong> Amazon revises referral/closing/fulfilment fees periodically (there were two revisions in recent months alone) — a hand-built rate card here would silently go stale. Open Amazon Seller Central's Revenue Calculator for this product, copy the numbers shown there into the matching fields below. Website fees, by contrast, are computed automatically from your Channel Cost Settings in Financials, since those are rates you control directly.
+      </div>
+
+      <ClosingFeeReferenceCard/>
+
+      <div className="grid sm:grid-cols-3 gap-4">
+        <Card className="sm:col-span-1">
+          <Input placeholder="Search SKU or combo…" value={query} onChange={e=>setQuery(e.target.value)} className="mb-3"/>
+          <div className="max-h-[32rem] overflow-y-auto space-y-1">
+            {filtered.map(p=>(
+              <button key={p.code} onClick={()=>selectProduct(p.code)} className="w-full text-left px-3 py-2 rounded-lg text-sm transition-colors" style={{backgroundColor:selectedCode===p.code?C.zenkyPurple:"transparent",color:selectedCode===p.code?C.softWhite:C.darkText}}>
+                <div className="font-bold flex items-center gap-1.5">{p.type==="Combo"&&<Boxes size={12}/>}{p.code}</div>
+                <div className="text-xs" style={{color:selectedCode===p.code?"rgba(255,255,255,0.8)":C.lightText}}>{p.name}</div>
+              </button>
+            ))}
+            {filtered.length===0&&<p className="text-sm text-center py-4" style={{color:C.lightText}}>No matches.</p>}
+          </div>
+        </Card>
+
+        <div className="sm:col-span-2">
+          {!selected?(
+            <Card><Empty icon={Calculator} title="Select a product" message="Choose a SKU or combo on the left to calculate its channel profit."/></Card>
+          ):(
+            <div>
+              <Card className="mb-4">
+                <div className="flex items-center justify-between mb-3">
+                  <div>
+                    <div className="font-bold text-lg" style={{fontFamily:F.display,color:C.darkText}}>{selected.name}</div>
+                    <div className="text-xs" style={{fontFamily:F.mono,color:C.lightText}}>{selected.code} · COGS {fmtINR(cogs)}</div>
+                  </div>
+                  <PrimaryButton onClick={save}><Save size={15}/>Save</PrimaryButton>
+                </div>
+                <div className="grid sm:grid-cols-3 gap-2">
+                  <Input placeholder="Weight (grams)" type="number" value={form.weight} onChange={e=>setForm({...form,weight:e.target.value})}/>
+                  <Input placeholder="Amazon Category" value={form.category} onChange={e=>setForm({...form,category:e.target.value})}/>
+                  <div className="relative"><span className="absolute left-3 top-2.5 text-sm" style={{color:C.lightText}}>₹</span><Input placeholder="Packaging Cost" type="number" className="pl-6" value={form.packagingCost} onChange={e=>setForm({...form,packagingCost:e.target.value})}/></div>
+                </div>
+              </Card>
+
+              <div className="flex gap-1.5 mb-4">
+                {[{id:"fba",label:"Amazon FBA"},{id:"fbm",label:"Amazon FBM"},{id:"website",label:"Website"}].map(t=>(
+                  <button key={t.id} onClick={()=>setChannelTab(t.id)} className="px-3.5 py-2 rounded-full text-xs font-bold transition-colors" style={{backgroundColor:channelTab===t.id?C.zenkyPurple:C.softWhite,color:channelTab===t.id?C.softWhite:C.darkText,border:`2px solid ${channelTab===t.id?C.zenkyPurple:C.border}`,fontFamily:F.display}}>
+                    {t.label}
+                  </button>
+                ))}
+              </div>
+
+              {(channelTab==="fba"||channelTab==="fbm")&&(()=>{
+                const key=channelTab,result=channelTab==="fba"?fbaResult:fbmResult;
+                return(
+                  <Card>
+                    <div className="grid sm:grid-cols-2 gap-3 mb-4">
+                      <div className="relative"><label className="text-xs font-bold uppercase block mb-1" style={{color:C.lightText}}>Item Price (Selling Price)</label><span className="absolute left-3 top-8 text-sm" style={{color:C.lightText}}>₹</span><Input type="number" className="pl-6" value={form[key].sellingPrice} onChange={e=>setForm({...form,[key]:{...form[key],sellingPrice:e.target.value}})}/></div>
+                    </div>
+                    <div className="text-xs font-bold uppercase mb-2" style={{color:C.lightText}}>Paste from Amazon's Revenue Calculator</div>
+                    <div className="grid sm:grid-cols-2 gap-3 mb-4">
+                      {AMAZON_FEE_FIELDS.map(f=>(
+                        <div key={f.key} className="relative"><label className="text-xs block mb-1" style={{color:C.lightText}}>{f.label}</label><span className="absolute left-3 top-8 text-sm" style={{color:C.lightText}}>₹</span><Input type="number" className="pl-6" value={form[key][f.key]} onChange={e=>setForm({...form,[key]:{...form[key],[f.key]:e.target.value}})}/></div>
+                      ))}
+                    </div>
+                    <div className="rounded-xl p-4 space-y-2" style={{backgroundColor:C.bgLight}}>
+                      <div className="flex justify-between text-sm"><span style={{color:C.lightText}}>Total Amazon Fees</span><span className="font-bold" style={{fontFamily:F.mono,color:C.zenkyOrange}}>{fmtINR(result.feesTotal)}</span></div>
+                      <div className="flex justify-between text-sm"><span style={{color:C.lightText}}>GST on Fees (18%)</span><span className="font-bold" style={{fontFamily:F.mono,color:C.zenkyOrange}}>{fmtINR(result.gst)}</span></div>
+                      <div className="flex justify-between text-sm"><span style={{color:C.lightText}}>Net Proceeds</span><span className="font-bold" style={{fontFamily:F.mono,color:C.zenkyPurple}}>{fmtINR(result.netProceeds)}</span></div>
+                      <div className="flex justify-between text-sm"><span style={{color:C.lightText}}>− COGS</span><span className="font-bold" style={{fontFamily:F.mono,color:C.zenkyOrange}}>{fmtINR(cogs)}</span></div>
+                      <div className="flex justify-between text-sm"><span style={{color:C.lightText}}>− Packaging Cost</span><span className="font-bold" style={{fontFamily:F.mono,color:C.zenkyOrange}}>{fmtINR(Number(form.packagingCost)||0)}</span></div>
+                      <div className="flex justify-between pt-2" style={{borderTop:`2px solid ${C.border}`}}>
+                        <span className="font-bold" style={{fontFamily:F.display,color:C.darkText}}>Net Profit</span>
+                        <span className="font-black text-lg" style={{fontFamily:F.mono,color:result.netProfit>=0?C.mintGreen:C.zenkyPink}}>{fmtINR(result.netProfit)}</span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span className="font-bold" style={{fontFamily:F.display,color:C.darkText}}>Net Margin</span>
+                        <span className="font-black text-lg" style={{fontFamily:F.mono,color:result.margin>=0?C.mintGreen:C.zenkyPink}}>{result.margin.toFixed(1)}%</span>
+                      </div>
+                    </div>
+                  </Card>
+                );
+              })()}
+
+              {channelTab==="website"&&(
+                <Card>
+                  <div className="grid sm:grid-cols-3 gap-3 mb-4">
+                    <div className="relative"><label className="text-xs font-bold uppercase block mb-1" style={{color:C.lightText}}>Selling Price</label><span className="absolute left-3 top-8 text-sm" style={{color:C.lightText}}>₹</span><Input type="number" className="pl-6" value={form.website.sellingPrice} onChange={e=>setForm({...form,website:{...form.website,sellingPrice:e.target.value}})}/></div>
+                    <div className="relative"><label className="text-xs block mb-1" style={{color:C.lightText}}>Shipping/Courier Cost</label><span className="absolute left-3 top-8 text-sm" style={{color:C.lightText}}>₹</span><Input type="number" className="pl-6" value={form.website.shippingCost} onChange={e=>setForm({...form,website:{...form.website,shippingCost:e.target.value}})}/></div>
+                    <div className="relative"><label className="text-xs block mb-1" style={{color:C.lightText}}>Packaging Cost (Website)</label><span className="absolute left-3 top-8 text-sm" style={{color:C.lightText}}>₹</span><Input type="number" className="pl-6" value={form.website.packagingCost} onChange={e=>setForm({...form,website:{...form.website,packagingCost:e.target.value}})}/></div>
+                  </div>
+                  <p className="text-xs mb-4" style={{color:C.lightText}}>Payment gateway fee ({financialSettings.gatewayFeePercent||0}% + {fmtINR(Number(financialSettings.gatewayFeeFixed)||0)}) is pulled automatically from Financials → Channel Cost Settings.</p>
+                  <div className="rounded-xl p-4 space-y-2" style={{backgroundColor:C.bgLight}}>
+                    <div className="flex justify-between text-sm"><span style={{color:C.lightText}}>Payment Gateway Fee</span><span className="font-bold" style={{fontFamily:F.mono,color:C.zenkyOrange}}>{fmtINR(websiteResult.gatewayFee)}</span></div>
+                    <div className="flex justify-between text-sm"><span style={{color:C.lightText}}>− Shipping/Courier Cost</span><span className="font-bold" style={{fontFamily:F.mono,color:C.zenkyOrange}}>{fmtINR(Number(form.website.shippingCost)||0)}</span></div>
+                    <div className="flex justify-between text-sm"><span style={{color:C.lightText}}>Net Proceeds</span><span className="font-bold" style={{fontFamily:F.mono,color:C.zenkyPurple}}>{fmtINR(websiteResult.netProceeds)}</span></div>
+                    <div className="flex justify-between text-sm"><span style={{color:C.lightText}}>− COGS</span><span className="font-bold" style={{fontFamily:F.mono,color:C.zenkyOrange}}>{fmtINR(cogs)}</span></div>
+                    <div className="flex justify-between text-sm"><span style={{color:C.lightText}}>− Packaging Cost</span><span className="font-bold" style={{fontFamily:F.mono,color:C.zenkyOrange}}>{fmtINR(Number(form.website.packagingCost)||0)}</span></div>
+                    <div className="flex justify-between pt-2" style={{borderTop:`2px solid ${C.border}`}}>
+                      <span className="font-bold" style={{fontFamily:F.display,color:C.darkText}}>Net Profit</span>
+                      <span className="font-black text-lg" style={{fontFamily:F.mono,color:websiteResult.netProfit>=0?C.mintGreen:C.zenkyPink}}>{fmtINR(websiteResult.netProfit)}</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="font-bold" style={{fontFamily:F.display,color:C.darkText}}>Net Margin</span>
+                      <span className="font-black text-lg" style={{fontFamily:F.mono,color:websiteResult.margin>=0?C.mintGreen:C.zenkyPink}}>{websiteResult.margin.toFixed(1)}%</span>
+                    </div>
+                  </div>
+                </Card>
+              )}
+
+              {selected.type==="Combo"&&(
+                <div className="mt-4 p-3 rounded-xl text-xs" style={{backgroundColor:"#FFF3E6",color:"#9a5b0f"}}>
+                  This combo's Amazon fees apply to the combo's own listing (its own weight and selling price) — not per component. COGS above is already the sum of every component's procurement cost.
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 /* ═══ ZENKYBOX SALES REPORT ═══ */
 function SalesReportsView({salesLines,skus,combos}){
   const [tab,setTab]=useState("overall");
@@ -1729,7 +2005,7 @@ function SalesReportsView({salesLines,skus,combos}){
 }
 
 /* ═══ SOURCE DATA (Admin only) ═══ */
-function SourceDataView({activityLog,synced,salesLines,setSalesLines,reports,setReports,skus,setSkus,combos,adminPin,loginCreds,investors,investments,expenses,income,forceSaveNow,logActivity,showToast}){
+function SourceDataView({activityLog,synced,salesLines,setSalesLines,reports,setReports,skus,setSkus,combos,adminPin,loginCreds,currentUser,investors,investments,expenses,income,forceSaveNow,logActivity,showToast}){
   const dbUrl=process.env.NEXT_PUBLIC_SUPABASE_URL||"";
   const [scanResult,setScanResult]=useState(null); // {dupeGroups, extraQtyBySku, linesToRemove}
   const [confirmText,setConfirmText]=useState("");
@@ -1765,8 +2041,8 @@ function SourceDataView({activityLog,synced,salesLines,setSalesLines,reports,set
   const daysSinceBackup=lastBackup?Math.floor((Date.now()-new Date(lastBackup).getTime())/86400000):null;
 
   function exportLog(){
-    let csv="Date,Action,Detail,Role\n";
-    activityLog.forEach(a=>csv+=`${a.date},"${a.action}","${a.detail||""}",${a.role}\n`);
+    let csv="Date,Action,Detail,User,Role\n";
+    activityLog.forEach(a=>csv+=`${a.date},"${a.action}","${a.detail||""}",${a.user||""},${a.role}\n`);
     downloadCsv("zenkybox_activity_log.csv",csv);
   }
   // Group log entries by day for a clean "day-wise" table
@@ -1810,7 +2086,7 @@ function SourceDataView({activityLog,synced,salesLines,setSalesLines,reports,set
     const removeSet=new Set(scanResult.linesToRemove);
     const newSalesLines=salesLines.filter(l=>!removeSet.has(l.id));
     const newSkus=skus.map(s=>scanResult.extraQtyBySku[s.sku]?{...s,stock:s.stock+scanResult.extraQtyBySku[s.sku]}:s);
-    const newActivityLog=[{id:Date.now().toString()+Math.random(),date:new Date().toISOString(),action:"Cleaned duplicate sales data",detail:`Removed ${scanResult.totalDuplicateLines} duplicate order lines, restored stock for ${Object.keys(scanResult.extraQtyBySku).length} SKUs`,role:"admin"},...activityLog].slice(0,300);
+    const newActivityLog=[{id:Date.now().toString()+Math.random(),date:new Date().toISOString(),action:"Cleaned duplicate sales data",detail:`Removed ${scanResult.totalDuplicateLines} duplicate order lines, restored stock for ${Object.keys(scanResult.extraQtyBySku).length} SKUs`,role:"admin",user:currentUser?.name||currentUser?.username||"unknown"},...activityLog].slice(0,300);
     setSalesLines(newSalesLines);
     setSkus(newSkus);
     logActivity?.("Cleaned duplicate sales data",`Removed ${scanResult.totalDuplicateLines} duplicate order lines, restored stock for ${Object.keys(scanResult.extraQtyBySku).length} SKUs`);
@@ -1828,7 +2104,7 @@ function SourceDataView({activityLog,synced,salesLines,setSalesLines,reports,set
     if(flushConfirmText.trim().toUpperCase()!=="FLUSH"){showToast("error",'Type "FLUSH" exactly to confirm.');return;}
     const lineCount=salesLines.length,reportCount=reports.length;
     const newSkus=skus.map(s=>({...s,stock:s.initialStock??s.stock}));
-    const newActivityLog=[{id:Date.now().toString()+Math.random(),date:new Date().toISOString(),action:"Flushed all sales data",detail:`Cleared ${lineCount} sale lines and ${reportCount} reports; reset stock to initial baseline for all SKUs`,role:"admin"},...activityLog].slice(0,300);
+    const newActivityLog=[{id:Date.now().toString()+Math.random(),date:new Date().toISOString(),action:"Flushed all sales data",detail:`Cleared ${lineCount} sale lines and ${reportCount} reports; reset stock to initial baseline for all SKUs`,role:"admin",user:currentUser?.name||currentUser?.username||"unknown"},...activityLog].slice(0,300);
     setSalesLines([]);
     setReports([]);
     // Reset every SKU's stock back to its recorded baseline, undoing every sales
@@ -1977,12 +2253,13 @@ function SourceDataView({activityLog,synced,salesLines,setSalesLines,reports,set
               <div key={day}>
                 <div className="text-xs font-bold uppercase mb-2" style={{color:C.lightText,letterSpacing:"0.03em"}}>{day}</div>
                 <div className="overflow-x-auto"><table className="w-full text-sm">
-                  <thead><tr style={{color:C.lightText}}><th className="py-1.5 pr-3 text-left font-bold text-xs uppercase w-24">Time</th><th className="py-1.5 pr-3 text-left font-bold text-xs uppercase">Action</th><th className="py-1.5 pr-3 text-left font-bold text-xs uppercase">Detail</th><th className="py-1.5 pr-3 text-left font-bold text-xs uppercase w-20">Role</th></tr></thead>
+                  <thead><tr style={{color:C.lightText}}><th className="py-1.5 pr-3 text-left font-bold text-xs uppercase w-24">Time</th><th className="py-1.5 pr-3 text-left font-bold text-xs uppercase">Action</th><th className="py-1.5 pr-3 text-left font-bold text-xs uppercase">Detail</th><th className="py-1.5 pr-3 text-left font-bold text-xs uppercase w-28">User</th><th className="py-1.5 pr-3 text-left font-bold text-xs uppercase w-20">Role</th></tr></thead>
                   <tbody>{entries.map(a=>(
                     <tr key={a.id} className="border-t" style={{borderColor:C.border}}>
                       <td className="py-1.5 pr-3" style={{fontFamily:F.mono,color:C.lightText}}>{new Date(a.date).toLocaleTimeString("en-IN",{hour:"2-digit",minute:"2-digit"})}</td>
                       <td className="py-1.5 pr-3 font-bold" style={{color:C.darkText}}>{a.action}</td>
                       <td className="py-1.5 pr-3" style={{color:C.lightText}}>{a.detail}</td>
+                      <td className="py-1.5 pr-3" style={{color:C.darkText,fontWeight:600}}>{a.user||"—"}</td>
                       <td className="py-1.5 pr-3"><Stamp tone={a.role==="admin"?"purple":"blue"}>{a.role}</Stamp></td>
                     </tr>
                   ))}</tbody>
@@ -2159,7 +2436,52 @@ function AccessManagementView({role,adminPin,setAdminPin,loginCreds,setLoginCred
 }
 
 /* ═══ FINANCIALS ═══ */
-function FinancialsView({investors,setInvestors,investments,setInvestments,expenses,setExpenses,income,setIncome,salesLines,skus,combos,reports,activityLog,adminPin,loginCreds,forceSaveNow,logActivity,showToast}){
+/* Reusable default rates for Website-channel profit calculations — payment
+   gateway fee and default shipping/packaging costs. Saved once here so the
+   upcoming per-SKU profit calculator doesn't need these re-entered every time.
+   Amazon fees are NOT configured here — see the framework note: Amazon's own
+   Revenue Calculator is the source of truth for their fees since Amazon
+   revises them periodically; a hand-maintained rate card would drift stale. */
+function ChannelCostSettingsCard({financialSettings,setFinancialSettings,logActivity,showToast}){
+  const [form,setForm]=useState(financialSettings);
+  function save(){
+    setFinancialSettings(form);
+    logActivity?.("Channel cost settings updated",`Gateway fee ${form.gatewayFeePercent||0}% + ₹${form.gatewayFeeFixed||0}, default shipping ₹${form.defaultShippingCost||0}, default packaging ₹${form.defaultPackagingCost||0}`);
+    showToast("success","Channel cost settings saved. ✨");
+  }
+  return(
+    <Card className="mb-6">
+      <h3 className="font-bold text-lg mb-2" style={{fontFamily:F.display,color:C.darkText}}>Channel Cost Settings</h3>
+      <p className="text-xs mb-4" style={{color:C.lightText}}>
+        Default rates for Website-channel sales — payment gateway fees and shipping/packaging costs that Amazon's own listings don't have (those are already reflected via Amazon's fee entries per SKU). These become the starting point for the per-SKU profit calculator; override per product where actual costs differ.
+      </p>
+      <div className="grid sm:grid-cols-2 gap-4 mb-4">
+        <div>
+          <label className="text-xs font-bold uppercase block mb-1" style={{color:C.lightText}}>Payment Gateway Fee</label>
+          <div className="flex gap-2">
+            <div className="relative flex-1"><Input placeholder="%" type="number" value={form.gatewayFeePercent} onChange={e=>setForm({...form,gatewayFeePercent:e.target.value})}/><span className="absolute right-3 top-2.5 text-sm" style={{color:C.lightText}}>%</span></div>
+            <div className="relative flex-1"><span className="absolute left-3 top-2.5 text-sm" style={{color:C.lightText}}>₹</span><Input placeholder="Fixed" type="number" className="pl-6" value={form.gatewayFeeFixed} onChange={e=>setForm({...form,gatewayFeeFixed:e.target.value})}/></div>
+          </div>
+          <p className="text-xs mt-1" style={{color:C.lightText}}>e.g. Razorpay is typically ~2% + fixed fee per transaction — confirm your actual rate.</p>
+        </div>
+        <div>
+          <label className="text-xs font-bold uppercase block mb-1" style={{color:C.lightText}}>Default Shipping/Courier Cost (Website only)</label>
+          <div className="relative"><span className="absolute left-3 top-2.5 text-sm" style={{color:C.lightText}}>₹</span><Input placeholder="Per order" type="number" className="pl-6" value={form.defaultShippingCost} onChange={e=>setForm({...form,defaultShippingCost:e.target.value})}/></div>
+          <p className="text-xs mt-1" style={{color:C.lightText}}>Not used for Amazon — Amazon's fulfilment cost already includes delivery.</p>
+        </div>
+        <div>
+          <label className="text-xs font-bold uppercase block mb-1" style={{color:C.lightText}}>Default Packaging Cost (both channels)</label>
+          <div className="relative"><span className="absolute left-3 top-2.5 text-sm" style={{color:C.lightText}}>₹</span><Input placeholder="Per unit" type="number" className="pl-6" value={form.defaultPackagingCost} onChange={e=>setForm({...form,defaultPackagingCost:e.target.value})}/></div>
+          <p className="text-xs mt-1" style={{color:C.lightText}}>Applies whether the sale is Amazon or Website — override per SKU if a specific product costs more/less to pack.</p>
+        </div>
+      </div>
+      <PrimaryButton onClick={save}><Save size={15}/>Save Channel Cost Settings</PrimaryButton>
+    </Card>
+  );
+}
+
+
+function FinancialsView({investors,setInvestors,investments,setInvestments,expenses,setExpenses,income,setIncome,salesLines,skus,combos,reports,activityLog,adminPin,loginCreds,financialSettings,setFinancialSettings,forceSaveNow,logActivity,showToast}){
 
   const [tab,setTab]=useState("overview");
   const [viewingInvestorId,setViewingInvestorId]=useState(null); // set to show the dedicated Investor Statement page instead of normal tab content
@@ -2214,6 +2536,7 @@ function FinancialsView({investors,setInvestors,investments,setInvestments,expen
       ];
       return all.sort((a,b)=>new Date(b.date)-new Date(a.date)).slice(0,10);
     },[]);
+    const revenueUtilized=useMemo(()=>expenses.filter(e=>e.fundedBy==="revenue").reduce((s,e)=>s+Number(e.amount||0),0),[]);
     return(
       <div>
         <Card className="mb-6" style={{borderColor:daysSinceFinBackup>7?"#fecaca":C.zenkyPurple}}>
@@ -2235,12 +2558,20 @@ function FinancialsView({investors,setInvestors,investments,setInvestments,expen
           <PrimaryButton onClick={downloadFinancialBackup}><Download size={15}/>Download Financial Backup Now</PrimaryButton>
           <p className="text-xs mt-3" style={{color:C.lightText}}>Store it outside Supabase/Vercel — Google Drive, email to yourself, or a folder on your computer.</p>
         </Card>
+
+        <ChannelCostSettingsCard financialSettings={financialSettings} setFinancialSettings={setFinancialSettings} logActivity={logActivity} showToast={showToast}/>
+
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-6">
           <Card><div className="text-xs font-bold uppercase" style={{color:C.lightText}}>Total Invested</div><div className="text-2xl font-black mt-1" style={{fontFamily:F.display,color:C.zenkyPurple}}>{fmtINR(totalInvested)}</div></Card>
           <Card><div className="text-xs font-bold uppercase" style={{color:C.lightText}}>Total Income</div><div className="text-2xl font-black mt-1" style={{fontFamily:F.display,color:C.mintGreen}}>{fmtINR(totalIncome)}</div></Card>
           <Card><div className="text-xs font-bold uppercase" style={{color:C.lightText}}>Total Expenses</div><div className="text-2xl font-black mt-1" style={{fontFamily:F.display,color:C.zenkyOrange}}>{fmtINR(totalExpenses)}</div></Card>
           <Card style={{borderColor:fundBalance>=0?C.mintGreen:C.zenkyPink}}><div className="text-xs font-bold uppercase" style={{color:C.lightText}}>Fund Balance</div><div className="text-2xl font-black mt-1" style={{fontFamily:F.display,color:fundBalance>=0?C.mintGreen:C.zenkyPink}}>{fmtINR(fundBalance)}</div></Card>
         </div>
+        {revenueUtilized>0&&(
+          <div className="mb-6 p-3 rounded-xl text-xs flex items-center justify-between" style={{backgroundColor:C.bgLight,color:C.lightText}}>
+            <span>Of the above, <strong style={{color:C.darkText}}>{fmtINR(revenueUtilized)}</strong> in expenses were funded directly from business revenue/profit rather than investor capital.</span>
+          </div>
+        )}
         <Card>
           <h3 className="font-bold text-lg mb-4" style={{fontFamily:F.display,color:C.darkText}}>Recent Activity</h3>
           {recent.length===0?<Empty icon={IndianRupee} title="No financial activity yet" message="Add investors, income, or expenses to see them here."/>:(
@@ -2331,10 +2662,11 @@ function FinancialsView({investors,setInvestors,investments,setInvestments,expen
     }
 
     const perInvestor=useMemo(()=>{
-      const totals={};
+      const totals={},utilized={};
       investments.forEach(t=>{totals[t.investorId]=(totals[t.investorId]||0)+Number(t.amount||0);});
-      return totals;
-    },[investments]);
+      expenses.forEach(e=>{if(e.fundedBy&&e.fundedBy!=="revenue")utilized[e.fundedBy]=(utilized[e.fundedBy]||0)+Number(e.amount||0);});
+      return{totals,utilized};
+    },[investments,expenses]);
 
     return(
       <div>
@@ -2349,15 +2681,20 @@ function FinancialsView({investors,setInvestors,investments,setInvestments,expen
 
           {investors.length>0&&(
             <div className="mt-5 overflow-x-auto"><table className="w-full text-sm">
-              <thead><tr style={{color:C.lightText}}><th className="py-2 pr-3 text-left font-bold text-xs uppercase">Name</th><th className="py-2 pr-3 text-left font-bold text-xs uppercase">Contact</th><th className="py-2 pr-3 text-left font-bold text-xs uppercase">Notes</th><th className="py-2 pr-3 text-left font-bold text-xs uppercase">Total Invested</th><th/></tr></thead>
+              <thead><tr style={{color:C.lightText}}><th className="py-2 pr-3 text-left font-bold text-xs uppercase">Name</th><th className="py-2 pr-3 text-left font-bold text-xs uppercase">Contact</th><th className="py-2 pr-3 text-left font-bold text-xs uppercase">Notes</th><th className="py-2 pr-3 text-left font-bold text-xs uppercase">Total Invested</th><th className="py-2 pr-3 text-left font-bold text-xs uppercase">Utilized</th><th className="py-2 pr-3 text-left font-bold text-xs uppercase">Available</th><th/></tr></thead>
               <tbody>{investors.map(inv=>{
                 const isEdit=editInvId===inv.id;
+                const invested=perInvestor.totals[inv.id]||0;
+                const utilized=perInvestor.utilized[inv.id]||0;
+                const available=invested-utilized;
                 return(
                   <tr key={inv.id} className="border-t" style={{borderColor:C.border}}>
                     <td className="py-2 pr-3 font-bold">{isEdit?<Input value={editInvValues.name} onChange={e=>setEditInvValues({...editInvValues,name:e.target.value})}/>:<button onClick={()=>setViewingInvestorId(inv.id)} className="underline hover:no-underline" style={{color:C.zenkyPurple}}>{inv.name}</button>}</td>
                     <td className="py-2 pr-3" style={{color:C.lightText}}>{isEdit?<Input value={editInvValues.contact} onChange={e=>setEditInvValues({...editInvValues,contact:e.target.value})}/>:(inv.contact||"—")}</td>
                     <td className="py-2 pr-3" style={{color:C.lightText}}>{isEdit?<Input value={editInvValues.notes} onChange={e=>setEditInvValues({...editInvValues,notes:e.target.value})}/>:(inv.notes||"—")}</td>
-                    <td className="py-2 pr-3 font-bold" style={{fontFamily:F.mono,color:C.zenkyPurple}}>{fmtINR(perInvestor[inv.id]||0)}</td>
+                    <td className="py-2 pr-3 font-bold" style={{fontFamily:F.mono,color:C.zenkyPurple}}>{fmtINR(invested)}</td>
+                    <td className="py-2 pr-3" style={{fontFamily:F.mono,color:C.zenkyOrange}}>{utilized>0?fmtINR(utilized):"—"}</td>
+                    <td className="py-2 pr-3 font-bold" style={{fontFamily:F.mono,color:available>=0?C.mintGreen:C.zenkyPink}}>{fmtINR(available)}</td>
                     <td className="py-2 pr-3">
                       <div className="flex items-center gap-1 justify-end">
                         {isEdit?(<><GhostButton title="Save" onClick={()=>saveInvestorEdit(inv.id)}><Check size={13}/></GhostButton><GhostButton title="Cancel" onClick={()=>setEditInvId(null)}><X size={13}/></GhostButton></>)
@@ -2437,16 +2774,21 @@ function FinancialsView({investors,setInvestors,investments,setInvestments,expen
 
   /* ── Expenses ── */
   function Expenses(){
-    const [form,setForm]=useState({date:new Date().toISOString().slice(0,10),head:"",amount:"",spentBy:"",paidTo:"",paymentMode:"",comment:""});
+    const [form,setForm]=useState({date:new Date().toISOString().slice(0,10),head:"",amount:"",spentBy:"",fundedBy:"",paidTo:"",paymentMode:"",comment:""});
     const [editId,setEditId]=useState(null);
     const [editValues,setEditValues]=useState({});
     const [deleteId,setDeleteId]=useState(null);
+    function fundedByLabel(val){
+      if(val==="revenue")return"Business Revenue";
+      const inv=investors.find(i=>i.id===val);
+      return inv?.name||"";
+    }
     function add(){
       const amount=Number(form.amount);
       if(!form.head){showToast("error","Choose an expense head.");return;}
       if(!amount||amount<=0){showToast("error","Enter a valid amount.");return;}
       const spentByInvestor=investors.find(i=>i.id===form.spentBy);
-      const e={id:Date.now().toString(),date:form.date,head:form.head,amount,spentBy:form.spentBy,spentByName:spentByInvestor?.name||"",paidTo:form.paidTo.trim(),paymentMode:form.paymentMode,comment:form.comment.trim()};
+      const e={id:Date.now().toString(),date:form.date,head:form.head,amount,spentBy:form.spentBy,spentByName:spentByInvestor?.name||"",fundedBy:form.fundedBy,fundedByName:fundedByLabel(form.fundedBy),paidTo:form.paidTo.trim(),paymentMode:form.paymentMode,comment:form.comment.trim()};
       setExpenses([...expenses,e]);
       // If this expense was personally covered by an investor, treat it as
       // capital they've put into the business — auto-log a linked investment
@@ -2457,16 +2799,16 @@ function FinancialsView({investors,setInvestors,investments,setInvestments,expen
         const linkedInv={id:`auto-${e.id}`,investorId:spentByInvestor.id,investorName:spentByInvestor.name,amount,date:form.date,paymentMode:form.paymentMode,comment:`Covered expense: ${form.head}`,fromExpenseId:e.id};
         setInvestments([...investments,linkedInv]);
       }
-      logActivity?.("Expense added",`${form.head} — ${fmtINR(amount)}${spentByInvestor?` (covered by ${spentByInvestor.name} — added to their investment total)`:""}`);
+      logActivity?.("Expense added",`${form.head} — ${fmtINR(amount)}${spentByInvestor?` (covered by ${spentByInvestor.name} — added to their investment total)`:""}${form.fundedBy?` — funded from ${fundedByLabel(form.fundedBy)}`:""}`);
       showToast("success",spentByInvestor?`Added expense — ${fmtINR(amount)}, credited to ${spentByInvestor.name}'s investment. ✨`:`Added expense — ${fmtINR(amount)}. ✨`);
-      setForm({date:form.date,head:"",amount:"",spentBy:"",paidTo:"",paymentMode:"",comment:""});
+      setForm({date:form.date,head:"",amount:"",spentBy:"",fundedBy:"",paidTo:"",paymentMode:"",comment:""});
     }
     function saveEdit(id){
       const amount=Number(editValues.amount);
       if(!editValues.head){showToast("error","Choose an expense head.");return;}
       if(!amount||amount<=0){showToast("error","Enter a valid amount.");return;}
       const spentByInvestor=investors.find(i=>i.id===editValues.spentBy);
-      setExpenses(expenses.map(e=>e.id===id?{...e,date:editValues.date,head:editValues.head,amount,spentBy:editValues.spentBy,spentByName:spentByInvestor?.name||"",paidTo:editValues.paidTo,paymentMode:editValues.paymentMode,comment:editValues.comment}:e));
+      setExpenses(expenses.map(e=>e.id===id?{...e,date:editValues.date,head:editValues.head,amount,spentBy:editValues.spentBy,spentByName:spentByInvestor?.name||"",fundedBy:editValues.fundedBy,fundedByName:fundedByLabel(editValues.fundedBy),paidTo:editValues.paidTo,paymentMode:editValues.paymentMode,comment:editValues.comment}:e));
       // Reconcile the linked investment: drop any previous auto-entry for this
       // expense, then re-add one if a "spent by" investor is still set.
       const withoutOld=investments.filter(t=>t.fromExpenseId!==id);
@@ -2637,6 +2979,14 @@ function FinancialsView({investors,setInvestors,investments,setInvestments,expen
               {PAYMENT_MODES.map(m=><option key={m} value={m}>{m}</option>)}
             </Select>
           </div>
+          <div className="mb-2">
+            <Select value={form.fundedBy} onChange={e=>setForm({...form,fundedBy:e.target.value})}>
+              <option value="">Fund source: not tracked…</option>
+              {investors.map(i=><option key={i.id} value={i.id}>Use {i.name}'s invested fund</option>)}
+              <option value="revenue">Use business revenue/profit</option>
+            </Select>
+            <p className="text-xs mt-1" style={{color:C.lightText}}>Optional — different from "Spent by." This tracks whose pooled capital the money came <em>from</em>, so you can see each investor's remaining available balance. Doesn't create a new investment credit.</p>
+          </div>
           <div className="mb-3">
             <Input placeholder="Comment (optional)" value={form.comment} onChange={e=>setForm({...form,comment:e.target.value})}/>
           </div>
@@ -2651,7 +3001,7 @@ function FinancialsView({investors,setInvestors,investments,setInvestments,expen
           </div>
           {expenses.length===0?<Empty icon={IndianRupee} title="No expenses logged" message="Add your first expense above."/>:(
             <div className="overflow-x-auto"><table className="w-full text-sm">
-              <thead><tr style={{color:C.lightText}}><th className="py-2 pr-3 text-left font-bold text-xs uppercase">Date</th><th className="py-2 pr-3 text-left font-bold text-xs uppercase">Head</th><th className="py-2 pr-3 text-left font-bold text-xs uppercase">Amount</th><th className="py-2 pr-3 text-left font-bold text-xs uppercase">Spent By</th><th className="py-2 pr-3 text-left font-bold text-xs uppercase">Paid To</th><th className="py-2 pr-3 text-left font-bold text-xs uppercase">Mode</th><th className="py-2 pr-3 text-left font-bold text-xs uppercase">Comment</th><th/></tr></thead>
+              <thead><tr style={{color:C.lightText}}><th className="py-2 pr-3 text-left font-bold text-xs uppercase">Date</th><th className="py-2 pr-3 text-left font-bold text-xs uppercase">Head</th><th className="py-2 pr-3 text-left font-bold text-xs uppercase">Amount</th><th className="py-2 pr-3 text-left font-bold text-xs uppercase">Spent By</th><th className="py-2 pr-3 text-left font-bold text-xs uppercase">Fund Source</th><th className="py-2 pr-3 text-left font-bold text-xs uppercase">Paid To</th><th className="py-2 pr-3 text-left font-bold text-xs uppercase">Mode</th><th className="py-2 pr-3 text-left font-bold text-xs uppercase">Comment</th><th/></tr></thead>
               <tbody>{[...expenses].sort((a,b)=>new Date(b.date)-new Date(a.date)).map(e=>{
                 const isEdit=editId===e.id;
                 return(
@@ -2660,6 +3010,7 @@ function FinancialsView({investors,setInvestors,investments,setInvestments,expen
                     <td className="py-2 pr-3">{isEdit?<Select value={editValues.head} onChange={ev=>setEditValues({...editValues,head:ev.target.value})}>{EXPENSE_HEADS.map(h=><option key={h} value={h}>{h}</option>)}</Select>:<Stamp tone="orange">{e.head}</Stamp>}</td>
                     <td className="py-2 pr-3 font-bold" style={{fontFamily:F.mono,color:C.zenkyOrange}}>{isEdit?<Input type="number" value={editValues.amount} onChange={ev=>setEditValues({...editValues,amount:ev.target.value})}/>:fmtINR(e.amount)}</td>
                     <td className="py-2 pr-3">{isEdit?<Select value={editValues.spentBy} onChange={ev=>setEditValues({...editValues,spentBy:ev.target.value})}><option value="">—</option>{investors.map(i=><option key={i.id} value={i.id}>{i.name}</option>)}</Select>:(e.spentByName?<Stamp tone="purple">{e.spentByName}</Stamp>:"—")}</td>
+                    <td className="py-2 pr-3">{isEdit?<Select value={editValues.fundedBy} onChange={ev=>setEditValues({...editValues,fundedBy:ev.target.value})}><option value="">—</option>{investors.map(i=><option key={i.id} value={i.id}>{i.name}</option>)}<option value="revenue">Revenue</option></Select>:(e.fundedByName?<Stamp tone="mint">{e.fundedByName}</Stamp>:"—")}</td>
                     <td className="py-2 pr-3">{isEdit?<Input value={editValues.paidTo} onChange={ev=>setEditValues({...editValues,paidTo:ev.target.value})}/>:(e.paidTo||"—")}</td>
                     <td className="py-2 pr-3">{isEdit?<Select value={editValues.paymentMode} onChange={ev=>setEditValues({...editValues,paymentMode:ev.target.value})}><option value="">—</option>{PAYMENT_MODES.map(m=><option key={m} value={m}>{m}</option>)}</Select>:(e.paymentMode?<Stamp tone="blue">{e.paymentMode}</Stamp>:"—")}</td>
                     <td className="py-2 pr-3" style={{color:C.lightText}}>{isEdit?<Input value={editValues.comment} onChange={ev=>setEditValues({...editValues,comment:ev.target.value})}/>:(e.comment||"—")}</td>
@@ -2667,7 +3018,7 @@ function FinancialsView({investors,setInvestors,investments,setInvestments,expen
                       <div className="flex items-center gap-1 justify-end">
                         {isEdit?(<><GhostButton title="Save" onClick={()=>saveEdit(e.id)}><Check size={13}/></GhostButton><GhostButton title="Cancel" onClick={()=>setEditId(null)}><X size={13}/></GhostButton></>)
                         :deleteId===e.id?(<><GhostButton title="Confirm" onClick={()=>removeExpense(e.id)}><Check size={13}/></GhostButton><GhostButton title="Cancel" onClick={()=>setDeleteId(null)}><X size={13}/></GhostButton></>)
-                        :(<><GhostButton title="Edit" onClick={()=>{setEditId(e.id);setEditValues({date:e.date,head:e.head,amount:e.amount,spentBy:e.spentBy||"",paidTo:e.paidTo||"",paymentMode:e.paymentMode||"",comment:e.comment});}}><Pencil size={13}/></GhostButton><GhostButton title="Delete" onClick={()=>setDeleteId(e.id)}><Trash2 size={13}/></GhostButton></>)}
+                        :(<><GhostButton title="Edit" onClick={()=>{setEditId(e.id);setEditValues({date:e.date,head:e.head,amount:e.amount,spentBy:e.spentBy||"",fundedBy:e.fundedBy||"",paidTo:e.paidTo||"",paymentMode:e.paymentMode||"",comment:e.comment});}}><Pencil size={13}/></GhostButton><GhostButton title="Delete" onClick={()=>setDeleteId(e.id)}><Trash2 size={13}/></GhostButton></>)}
                       </div>
                     </td>
                   </tr>
@@ -2797,13 +3148,18 @@ function FinancialsView({investors,setInvestors,investments,setInvestments,expen
       return{skuRows:Object.values(bySku).sort((a,b)=>b.revenue-a.revenue),comboRows:Object.values(byCombo).sort((a,b)=>b.revenue-a.revenue)};
     }
 
-    // Operating expenses exclude "Product Procurement" — that cost is already
-    // reflected as COGS against units actually SOLD (via each SKU's procurement
-    // cost in Sales Report). Counting the same rupees again here as an operating
-    // expense would double-count it. Procurement is instead shown separately as
-    // a cash-outflow reference, since buying inventory IS real money leaving the
-    // business, just not a same-period "expense" in the profitability sense.
-    const PROCUREMENT_HEAD="Product Procurement";
+    // Operating expenses exclude heads that are now tracked PER UNIT via the
+    // Profit Calculator (Product Procurement → COGS, Packaging Expenses and
+    // Shipping & Courier Charges → packaging/shipping cost per sale). Counting
+    // the same rupees again here as a lump-sum operating expense would double
+    // them. Each is still shown separately below as a cash-outflow reference,
+    // since the money genuinely left the business — just not as a same-period
+    // "operating expense" once it's already reflected against units sold.
+    const EXCLUDED_FROM_OPEX={
+      "Product Procurement":"procurementTotal",
+      "Packaging Expenses":"packagingTotal",
+      "Shipping & Courier Charges":"shippingTotal",
+    };
     // "Income from Amazon"/"Income from Website" are excluded from Other Income
     // for the same reason: that revenue is already counted via Sales Report.
     const SALES_INCOME_HEADS=["Income from Amazon","Income from Website"];
@@ -2813,10 +3169,12 @@ function FinancialsView({investors,setInvestors,investments,setInvestments,expen
       const totalRevenue=lines.reduce((s,l)=>s+l.revenue,0);
       const totalCOGS=lines.reduce((s,l)=>s+l.cost,0);
       const grossProfit=totalRevenue-totalCOGS;
-      const opExByHead={};let totalOpEx=0,procurementTotal=0;
+      const opExByHead={};let totalOpEx=0;
+      const excludedTotals={procurementTotal:0,packagingTotal:0,shippingTotal:0};
       expenseList.forEach(e=>{
         const amt=Number(e.amount||0);
-        if(e.head===PROCUREMENT_HEAD){procurementTotal+=amt;return;}
+        const excludedKey=EXCLUDED_FROM_OPEX[e.head];
+        if(excludedKey){excludedTotals[excludedKey]+=amt;return;}
         opExByHead[e.head]=(opExByHead[e.head]||0)+amt;totalOpEx+=amt;
       });
       const otherIncomeByHead={};let totalOtherIncome=0;
@@ -2826,7 +3184,7 @@ function FinancialsView({investors,setInvestors,investments,setInvestments,expen
         otherIncomeByHead[i.head]=(otherIncomeByHead[i.head]||0)+amt;totalOtherIncome+=amt;
       });
       const netProfit=grossProfit-totalOpEx+totalOtherIncome;
-      return{skuRows,comboRows,totalRevenue,totalCOGS,grossProfit,opExByHead,totalOpEx,procurementTotal,otherIncomeByHead,totalOtherIncome,netProfit};
+      return{skuRows,comboRows,totalRevenue,totalCOGS,grossProfit,opExByHead,totalOpEx,...excludedTotals,otherIncomeByHead,totalOtherIncome,netProfit};
     }
 
     const overallPL=useMemo(()=>plFor(salesLines,expenses,income),[]);
@@ -2842,6 +3200,8 @@ function FinancialsView({investors,setInvestors,investments,setInvestments,expen
       Object.entries(pl.opExByHead).forEach(([h,a])=>csv+=`"${h}",${a.toFixed(2)}\n`);
       csv+=`TOTAL OPERATING EXPENSES,${pl.totalOpEx.toFixed(2)}\n`;
       csv+=`\nInventory Purchases (Product Procurement — cash outflow, excluded from Net Profit as it's already counted via COGS),${pl.procurementTotal.toFixed(2)}\n`;
+      csv+=`Packaging (lump-sum purchases — excluded from Net Profit as it's already counted per unit sold),${pl.packagingTotal.toFixed(2)}\n`;
+      csv+=`Shipping & Courier (lump-sum — excluded from Net Profit as it's already counted per unit sold),${pl.shippingTotal.toFixed(2)}\n`;
       csv+="\nOTHER INCOME (excludes Amazon/Website — already in Revenue)\nHead,Amount\n";
       Object.entries(pl.otherIncomeByHead).forEach(([h,a])=>csv+=`"${h}",${a.toFixed(2)}\n`);
       csv+=`TOTAL OTHER INCOME,${pl.totalOtherIncome.toFixed(2)}\n`;
@@ -2853,7 +3213,7 @@ function FinancialsView({investors,setInvestors,investments,setInvestments,expen
       return(
         <div>
           <div className="mb-4 p-3 rounded-xl text-xs" style={{backgroundColor:C.bgLight,color:C.lightText}}>
-            <strong>How this is calculated (plain English):</strong> Revenue and product cost (COGS) come from your Sales Report — what was actually sold. Gross Profit = Revenue − COGS. Operating Expenses are everything you've logged in Expenses <em>except</em> "Product Procurement" — that's excluded here because it's already counted as COGS against units sold (counting it twice would understate your real profit). Other Income excludes "Income from Amazon/Website" since that revenue is already in Sales Report. Net Profit = Gross Profit − Operating Expenses + Other Income.
+            <strong>How this is calculated (plain English):</strong> Revenue and product cost (COGS) come from your Sales Report — what was actually sold. Gross Profit = Revenue − COGS. Operating Expenses are everything you've logged in Expenses <em>except</em> "Product Procurement," "Packaging Expenses," and "Shipping & Courier Charges" — those three are excluded here because they're already counted per unit sold (via COGS and the Profit Calculator's packaging/shipping fields); counting them again would understate your real profit. Other Income excludes "Income from Amazon/Website" since that revenue is already in Sales Report. Net Profit = Gross Profit − Operating Expenses + Other Income.
           </div>
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-6">
             <Card><div className="text-xs font-bold uppercase" style={{color:C.lightText}}>Revenue</div><div className="text-xl font-black mt-1" style={{fontFamily:F.display,color:C.zenkyPurple}}>{fmtINR(pl.totalRevenue)}</div></Card>
@@ -2880,6 +3240,8 @@ function FinancialsView({investors,setInvestors,investments,setInvestments,expen
               </div>
             )}
             {pl.procurementTotal>0&&<p className="text-xs mt-3 p-2.5 rounded-lg" style={{backgroundColor:C.bgLight,color:C.lightText}}>Inventory Purchases (Product Procurement): <strong>{fmtINR(pl.procurementTotal)}</strong> — real cash spent buying stock, but not included in Net Profit above since it's already reflected as COGS against units sold.</p>}
+            {pl.packagingTotal>0&&<p className="text-xs mt-2 p-2.5 rounded-lg" style={{backgroundColor:C.bgLight,color:C.lightText}}>Packaging purchases: <strong>{fmtINR(pl.packagingTotal)}</strong> — excluded here since packaging cost is already reflected per unit sold (see Profit Calculator).</p>}
+            {pl.shippingTotal>0&&<p className="text-xs mt-2 p-2.5 rounded-lg" style={{backgroundColor:C.bgLight,color:C.lightText}}>Shipping & courier: <strong>{fmtINR(pl.shippingTotal)}</strong> — excluded here since shipping cost is already reflected per Website unit sold (see Profit Calculator).</p>}
           </Card>
 
           <Card>
@@ -3204,6 +3566,9 @@ function FinancialsView({investors,setInvestors,investments,setInvestments,expen
         .sort((a,b)=>new Date(a.date)-new Date(b.date));
     },[]);
     const total=timeline.reduce((s,t)=>s+t.amount,0);
+    const utilized=useMemo(()=>expenses.filter(e=>e.fundedBy===inv.id).reduce((s,e)=>s+Number(e.amount||0),0),[]);
+    const available=total-utilized;
+    const fundedExpenses=useMemo(()=>expenses.filter(e=>e.fundedBy===inv.id).sort((a,b)=>new Date(a.date)-new Date(b.date)),[]);
 
     function exportStatement(){
       let csv=`ZenkyBox — Investor Statement\nInvestor: ${inv.name}\nGenerated: ${new Date().toLocaleDateString("en-IN")}\n\n`;
@@ -3238,10 +3603,37 @@ function FinancialsView({investors,setInvestors,investments,setInvestments,expen
               </div>
             </div>
 
-            <div className="rounded-xl p-4 mb-6 flex items-center justify-between" style={{backgroundColor:C.bgLight}}>
-              <span className="font-bold" style={{fontFamily:F.display,color:C.darkText}}>Total Invested</span>
-              <span className="text-2xl font-black" style={{fontFamily:F.display,color:C.zenkyPurple}}>{fmtINR(total)}</span>
+            <div className="grid grid-cols-3 gap-3 mb-6">
+              <div className="rounded-xl p-4" style={{backgroundColor:C.bgLight}}>
+                <div className="text-xs font-bold uppercase" style={{color:C.lightText}}>Total Invested</div>
+                <div className="text-xl font-black mt-1" style={{fontFamily:F.display,color:C.zenkyPurple}}>{fmtINR(total)}</div>
+              </div>
+              <div className="rounded-xl p-4" style={{backgroundColor:C.bgLight}}>
+                <div className="text-xs font-bold uppercase" style={{color:C.lightText}}>Utilized</div>
+                <div className="text-xl font-black mt-1" style={{fontFamily:F.display,color:C.zenkyOrange}}>{fmtINR(utilized)}</div>
+              </div>
+              <div className="rounded-xl p-4" style={{backgroundColor:C.bgLight}}>
+                <div className="text-xs font-bold uppercase" style={{color:C.lightText}}>Available</div>
+                <div className="text-xl font-black mt-1" style={{fontFamily:F.display,color:available>=0?C.mintGreen:C.zenkyPink}}>{fmtINR(available)}</div>
+              </div>
             </div>
+
+            {fundedExpenses.length>0&&(
+              <div className="mb-6">
+                <h3 className="font-bold text-lg mb-3" style={{fontFamily:F.display,color:C.darkText}}>Expenses Funded From This Investor's Pool</h3>
+                <div className="overflow-x-auto"><table className="w-full text-sm">
+                  <thead><tr style={{color:C.lightText}}><th className="py-1.5 pr-3 text-left text-xs uppercase font-bold">Date</th><th className="py-1.5 pr-3 text-left text-xs uppercase font-bold">Head</th><th className="py-1.5 pr-3 text-left text-xs uppercase font-bold">Spent By</th><th className="py-1.5 pr-3 text-left text-xs uppercase font-bold">Amount</th></tr></thead>
+                  <tbody>{fundedExpenses.map(e=>(
+                    <tr key={e.id} className="border-t" style={{borderColor:C.border}}>
+                      <td className="py-1.5 pr-3" style={{fontFamily:F.mono,color:C.lightText}}>{e.date}</td>
+                      <td className="py-1.5 pr-3">{e.head}</td>
+                      <td className="py-1.5 pr-3" style={{color:C.lightText}}>{e.spentByName||"—"}</td>
+                      <td className="py-1.5 pr-3 font-bold" style={{fontFamily:F.mono,color:C.zenkyOrange}}>{fmtINR(e.amount)}</td>
+                    </tr>
+                  ))}</tbody>
+                </table></div>
+              </div>
+            )}
 
             <div className="flex items-center justify-between mb-3">
               <h3 className="font-bold text-lg" style={{fontFamily:F.display,color:C.darkText}}>Date-wise Investment History</h3>
@@ -3323,6 +3715,8 @@ export default function App(){
   const [investments,setInvestments]=useState([]);
   const [expenses,setExpenses]=useState([]);
   const [income,setIncome]=useState([]);
+  const [financialSettings,setFinancialSettings]=useState({gatewayFeePercent:"",gatewayFeeFixed:"",defaultShippingCost:"",defaultPackagingCost:""});
+  const [channelProfitData,setChannelProfitData]=useState({}); // keyed by SKU/combo code: {weight,category,packagingCost,fba:{...},fbm:{...},website:{...}}
   const [loaded,setLoaded]=useState(false);
   const [canSave,setCanSave]=useState(false); // only true once a load has genuinely succeeded — prevents overwriting real data with an empty state after a failed fetch
   const [loadError,setLoadError]=useState(false);
@@ -3349,6 +3743,8 @@ export default function App(){
     setUsers(data?.users||[]);
     setInvestors(data?.investors||[]);setInvestments(data?.investments||[]);
     setExpenses(data?.expenses||[]);setIncome(data?.income||[]);
+    setFinancialSettings(data?.financialSettings||{gatewayFeePercent:"",gatewayFeeFixed:"",defaultShippingCost:"",defaultPackagingCost:""});
+    setChannelProfitData(data?.channelProfitData||{});
   }
 
   // Load initial data — retries a couple of times on failure before giving up,
@@ -3412,12 +3808,12 @@ export default function App(){
     if(!loaded||!canSave)return;
     clearTimeout(saveTimeout.current);
     saveTimeout.current=setTimeout(()=>{
-      saveData({skus,combos,reports,salesLines,activityLog,adminPin,loginCreds,users,investors,investments,expenses,income})
+      saveData({skus,combos,reports,salesLines,activityLog,adminPin,loginCreds,users,investors,investments,expenses,income,financialSettings,channelProfitData})
         .then(timestamp=>{if(timestamp)lastKnownUpdatedAt.current=timestamp;})
         .catch(()=>{});
     },500);
     return()=>clearTimeout(saveTimeout.current);
-  },[skus,combos,reports,salesLines,activityLog,adminPin,loginCreds,users,investors,investments,expenses,income,loaded,canSave]);
+  },[skus,combos,reports,salesLines,activityLog,adminPin,loginCreds,users,investors,investments,expenses,income,financialSettings,channelProfitData,loaded,canSave]);
 
   // For destructive/corrective actions (Flush, Cleanup, Clear All, Replace All) —
   // caller supplies the COMPLETE new payload explicitly (not read from state,
@@ -3446,7 +3842,8 @@ export default function App(){
   function showToast(type,msg){setToast({type,msg});setTimeout(()=>setToast(null),3500);}
 
   function logActivity(action,detail){
-    setActivityLog(prev=>[{id:Date.now().toString()+Math.random(),date:new Date().toISOString(),action,detail:detail||"",role},...prev].slice(0,300));
+    const who=currentUser?.name||currentUser?.username||"unknown";
+    setActivityLog(prev=>[{id:Date.now().toString()+Math.random(),date:new Date().toISOString(),action,detail:detail||"",role,user:who},...prev].slice(0,300));
   }
 
   function handleUnlock(pin){
@@ -3560,12 +3957,13 @@ export default function App(){
               {view==="bulk-import"&&<BulkImportView skus={skus} combos={combos} setSkus={setSkus} setCombos={setCombos} showToast={showToast} logActivity={logActivity}/>}
               {view==="catalog"&&<Catalog skus={skus} setSkus={setSkus} showToast={showToast} role={role} logActivity={logActivity}/>}
               {view==="combos"&&<CombosView skus={skus} combos={combos} setCombos={setCombos} showToast={showToast} role={role} logActivity={logActivity}/>}
-              {view==="upload"&&<UploadView skus={skus} combos={combos} setSkus={setSkus} reports={reports} setReports={setReports} salesLines={salesLines} setSalesLines={setSalesLines} logActivity={logActivity} showToast={showToast}/>}
+              {view==="upload"&&<UploadView skus={skus} combos={combos} setSkus={setSkus} reports={reports} setReports={setReports} salesLines={salesLines} setSalesLines={setSalesLines} financialSettings={financialSettings} logActivity={logActivity} showToast={showToast}/>}
               {view==="reports"&&<ReportsView reports={reports} skus={skus} combos={combos}/>}
               {view==="sales-reports"&&<SalesReportsView salesLines={salesLines} skus={skus} combos={combos}/>}
               {view==="costing"&&<CostingPricingView skus={skus}/>}
-              {view==="financials"&&<FinancialsView investors={investors} setInvestors={setInvestors} investments={investments} setInvestments={setInvestments} expenses={expenses} setExpenses={setExpenses} income={income} setIncome={setIncome} salesLines={salesLines} skus={skus} combos={combos} reports={reports} activityLog={activityLog} adminPin={adminPin} loginCreds={loginCreds} forceSaveNow={forceSaveNow} logActivity={logActivity} showToast={showToast}/>}
-              {view==="source-data"&&<SourceDataView activityLog={activityLog} synced={synced} salesLines={salesLines} setSalesLines={setSalesLines} reports={reports} setReports={setReports} skus={skus} setSkus={setSkus} combos={combos} adminPin={adminPin} loginCreds={loginCreds} investors={investors} investments={investments} expenses={expenses} income={income} forceSaveNow={forceSaveNow} logActivity={logActivity} showToast={showToast}/>}
+              {view==="profit-calc"&&<ProfitCalculatorView skus={skus} combos={combos} channelProfitData={channelProfitData} setChannelProfitData={setChannelProfitData} financialSettings={financialSettings} logActivity={logActivity} showToast={showToast}/>}
+              {view==="financials"&&<FinancialsView investors={investors} setInvestors={setInvestors} investments={investments} setInvestments={setInvestments} expenses={expenses} setExpenses={setExpenses} income={income} setIncome={setIncome} salesLines={salesLines} skus={skus} combos={combos} reports={reports} activityLog={activityLog} adminPin={adminPin} loginCreds={loginCreds} financialSettings={financialSettings} setFinancialSettings={setFinancialSettings} forceSaveNow={forceSaveNow} logActivity={logActivity} showToast={showToast}/>}
+              {view==="source-data"&&<SourceDataView activityLog={activityLog} synced={synced} salesLines={salesLines} setSalesLines={setSalesLines} reports={reports} setReports={setReports} skus={skus} setSkus={setSkus} combos={combos} adminPin={adminPin} loginCreds={loginCreds} currentUser={currentUser} investors={investors} investments={investments} expenses={expenses} income={income} forceSaveNow={forceSaveNow} logActivity={logActivity} showToast={showToast}/>}
               {view==="access"&&<AccessManagementView role={role} adminPin={adminPin} setAdminPin={setAdminPin} loginCreds={loginCreds} setLoginCreds={setLoginCreds} users={users} setUsers={setUsers} showToast={showToast} logActivity={logActivity}/>}
             </>
           )}
