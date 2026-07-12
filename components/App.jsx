@@ -3132,7 +3132,7 @@ function FinancialsView({investors,setInvestors,investments,setInvestments,expen
                     <td colSpan={2} className="py-2 pr-3 font-bold" style={{fontFamily:F.display}}>Total</td>
                     <td className="py-2 pr-3 font-bold" style={{fontFamily:F.mono,color:C.zenkyOrange}}>{fmtINR(npGrossTotal)}</td>
                     <td className="py-2 pr-3 font-bold" style={{fontFamily:F.mono,color:C.mintGreen}}>{fmtINR(npTotal)}</td>
-                  </tfoot>
+                  </tr></tfoot>
                 </table></div>
                 <div className="mb-3 p-2.5 rounded-xl text-xs" style={{backgroundColor:C.bgLight,color:C.lightText}}>
                   This will log <strong style={{color:C.mintGreen}}>{fmtINR(npTotal)}</strong> as one "Income from Amazon" entry — the verified net figure, not the {fmtINR(npGrossTotal)} gross. Difference of {fmtINR(npGrossTotal-npTotal)} is Amazon's fees, already excluded.
