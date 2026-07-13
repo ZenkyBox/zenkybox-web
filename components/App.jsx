@@ -354,13 +354,10 @@ function PLSortableTable({rows,title}){
                     <div className="text-xs font-bold uppercase mb-2" style={{color:C.lightText}}>What's inside this COGS figure ({fmt(r.qty)} units)</div>
                     <div className="grid sm:grid-cols-2 gap-x-6 gap-y-1 text-xs">
                       <div className="flex justify-between"><span style={{color:C.darkText}}>SKU / Procurement Cost</span><span className="font-bold" style={{fontFamily:F.mono,color:C.zenkyOrange}}>{fmtINR(r.skuCost)}</span></div>
-                      <div className="flex justify-between"><span style={{color:C.darkText}}>Amazon Fees (Referral+Closing+Fulfilment+Storage+Other)</span><span className="font-bold" style={{fontFamily:F.mono,color:C.zenkyOrange}}>{fmtINR(r.amazonFees)}</span></div>
-                      <div className="flex justify-between"><span style={{color:C.darkText}}>GST on Fees (18%)</span><span className="font-bold" style={{fontFamily:F.mono,color:C.zenkyOrange}}>{fmtINR(r.gst)}</span></div>
-                      <div className="flex justify-between"><span style={{color:C.darkText}}>Packaging Cost</span><span className="font-bold" style={{fontFamily:F.mono,color:C.zenkyOrange}}>{fmtINR(r.packaging)}</span></div>
-                      <div className="flex justify-between"><span style={{color:C.darkText}}>Branding Cost</span><span className="font-bold" style={{fontFamily:F.mono,color:C.zenkyOrange}}>{fmtINR(r.branding)}</span></div>
+                      <div className="flex justify-between"><span style={{color:C.darkText}}>Shipping Cost</span><span className="font-bold" style={{fontFamily:F.mono,color:C.zenkyOrange}}>{fmtINR(r.shipping)}</span></div>
                       <div className="flex justify-between pt-1" style={{borderTop:`1px solid ${C.border}`}}><span className="font-bold" style={{color:C.darkText}}>Total COGS</span><span className="font-bold" style={{fontFamily:F.mono,color:C.zenkyPurple}}>{fmtINR(r.cogs)}</span></div>
                     </div>
-                    {r.anyPartial&&<p className="text-xs mt-2" style={{color:C.zenkyPink}}>⚠ Some sales here used a partial estimate (Closing Fee slab only — no Fulfilment/Packaging/Branding data) because this SKU/combo isn't fully configured in Profit Calculator yet. Configure it there for a complete figure.</p>}
+                    {r.anyPartial&&<p className="text-xs mt-2" style={{color:C.zenkyPink}}>⚠ Some sales here have no shipping cost configured because this SKU/combo isn't set up in Profit Calculator yet — shown as SKU cost only. Configure it there for a complete figure.</p>}
                   </div>
                 </td></tr>
               )}
@@ -1179,7 +1176,6 @@ function UploadView({skus,combos,setSkus,reports,setReports,salesLines,setSalesL
   const [rawRows,setRawRows]=useState([]);const [extraCols,setExtraCols]=useState({});
   const [repairNote,setRepairNote]=useState(null);
   const [skipDuplicates,setSkipDuplicates]=useState(true);
-  const [bulkPackagingCost,setBulkPackagingCost]=useState(financialSettings?.defaultPackagingCost||"");
   const [bulkShippingCost,setBulkShippingCost]=useState(financialSettings?.defaultShippingCost||"");
   const [weekLabel,setWeekLabel]=useState("");const ref=useRef(null);
   const skuMap=useMemo(()=>Object.fromEntries(skus.map(s=>[s.sku,s])),[skus]);
@@ -1251,11 +1247,10 @@ function UploadView({skus,combos,setSkus,reports,setReports,salesLines,setSalesL
 
   function applyReport(){
     if(!weekLabel.trim()){showToast("error","Add a report label.");return;}
-    // Website uploads must have packaging and shipping cost recorded — real
-    // per-order costs that directly affect true profit, same requirement as
+    // Website uploads must have shipping cost recorded — the dominant real
+    // per-order cost that directly affects true profit, same requirement as
     // the manual single-order entry.
     if(channel==="website"){
-      if(bulkPackagingCost===""||Number(bulkPackagingCost)<0){showToast("error","Enter the packaging cost per unit before applying.");return;}
       if(bulkShippingCost===""||Number(bulkShippingCost)<0){showToast("error","Enter the shipping/courier cost per unit before applying.");return;}
     }
     const skippedCount=duplicateOrderIds.size;
@@ -1270,24 +1265,23 @@ function UploadView({skus,combos,setSkus,reports,setReports,salesLines,setSalesL
       unmatched:aggregated.filter(a=>a.matchType==="unknown"),
       skippedDuplicates:skippedCount};
 
-    const packagingPerUnit=channel==="website"?Number(bulkPackagingCost)||0:0;
     const shippingPerUnit=channel==="website"?Number(bulkShippingCost)||0:0;
     const newLines=effectiveRows.map((row,i)=>{
       const combo=comboMap[row.sku],sku=skuMap[row.sku];
       const matchType=combo?"combo":sku?"direct":"unknown";
       const name=combo?.name||sku?.name||row.sku;
       const unitCost=unitCostOf(row.sku,matchType,skuMap,comboMap);
-      const packagingCost=packagingPerUnit*row.qty,shippingCost=shippingPerUnit*row.qty;
-      const cost=(unitCost*row.qty)+packagingCost+shippingCost;
+      const shippingCost=shippingPerUnit*row.qty;
+      const cost=(unitCost*row.qty)+shippingCost;
       const revenue=row.price!=null&&!isNaN(row.price)?row.price*row.qty:0;
-      return{id:`${reportId}-${i}`,reportId,channel,date:row.date||report.appliedAt,sku:row.sku,name,matchType,qty:row.qty,unitCost,cost,revenue,earning:revenue-cost,orderId:row.orderId||"",buyer:row.buyer||"",city:row.city||"",state:row.state||"",packagingCost,shippingCost};
+      return{id:`${reportId}-${i}`,reportId,channel,date:row.date||report.appliedAt,sku:row.sku,name,matchType,qty:row.qty,unitCost,cost,revenue,earning:revenue-cost,orderId:row.orderId||"",buyer:row.buyer||"",city:row.city||"",state:row.state||"",shippingCost};
     });
 
     setSkus(newSkus);setReports([report,...reports]);setSalesLines([...salesLines,...newLines]);
-    logActivity?.("Sales report applied",`[${channel}] "${weekLabel.trim()}" — ${fileName} (${aggregated.length} codes, ${newLines.length} order lines${skippedCount?`, ${skippedCount} duplicate orders skipped`:""}${channel==="website"?`, packaging ${fmtINR(packagingPerUnit)}/unit + shipping ${fmtINR(shippingPerUnit)}/unit`:""})`);
+    logActivity?.("Sales report applied",`[${channel}] "${weekLabel.trim()}" — ${fileName} (${aggregated.length} codes, ${newLines.length} order lines${skippedCount?`, ${skippedCount} duplicate orders skipped`:""}${channel==="website"?`, shipping ${fmtINR(shippingPerUnit)}/unit`:""})`);
     setStage("applied");showToast("success",skippedCount?`Inventory updated — ${skippedCount} duplicate order(s) skipped. 📊`:"Inventory updated. 📊");
   }
-  function reset(){setStage("idle");setRawRows([]);setFileName("");setWeekLabel("");setRepairNote(null);setSkipDuplicates(true);setBulkPackagingCost(financialSettings?.defaultPackagingCost||"");setBulkShippingCost(financialSettings?.defaultShippingCost||"");if(ref.current)ref.current.value="";}
+  function reset(){setStage("idle");setRawRows([]);setFileName("");setWeekLabel("");setRepairNote(null);setSkipDuplicates(true);setBulkShippingCost(financialSettings?.defaultShippingCost||"");if(ref.current)ref.current.value="";}
 
   function downloadWebsiteTemplate(){
     const csv="sku,quantity,item-price,purchase-date,buyer-name,buyer-email,ship-city,ship-state\n"+
@@ -1381,11 +1375,8 @@ function UploadView({skus,combos,setSkus,reports,setReports,salesLines,setSalesL
           <div className="overflow-x-auto mb-4"><table className="w-full text-sm"><thead><tr style={{color:C.lightText}}><th className="py-2 pr-3 text-left font-bold text-xs uppercase">Code</th><th className="py-2 pr-3 text-left font-bold text-xs uppercase">Qty</th><th className="py-2 pr-3 text-left font-bold text-xs uppercase">Type</th><th className="py-2 pr-3 text-left font-bold text-xs uppercase">Name</th></tr></thead><tbody>{aggregated.map(a=><tr key={a.code} className="border-t" style={{borderColor:C.border}}><td className="py-2 pr-3" style={{fontFamily:F.mono,fontWeight:600}}>{a.code}</td><td className="py-2 pr-3" style={{fontFamily:F.mono}}>{fmt(a.qty)}</td><td className="py-2 pr-3">{a.matchType==="combo"?<Stamp tone="mint">Combo</Stamp>:a.matchType==="direct"?<Stamp tone="purple">SKU</Stamp>:<Stamp tone="pink">Unknown</Stamp>}</td><td className="py-2 pr-3" style={{color:a.matchType==="unknown"?C.zenkyPink:C.darkText}}>{a.matchName}</td></tr>)}</tbody></table></div>
           {channel==="website"&&(
             <div className="mb-4 p-3 rounded-xl" style={{backgroundColor:"#FFF3E6"}}>
-              <p className="text-xs font-bold mb-2" style={{color:"#9a5b0f"}}>Required — packaging and shipping cost per unit for this batch (applies to every order in this upload):</p>
-              <div className="grid grid-cols-2 gap-2">
-                <div className="relative"><span className="absolute left-3 top-2.5 text-sm" style={{color:C.lightText}}>₹</span><Input placeholder="Packaging cost / unit" type="number" className="pl-6" value={bulkPackagingCost} onChange={e=>setBulkPackagingCost(e.target.value)}/></div>
-                <div className="relative"><span className="absolute left-3 top-2.5 text-sm" style={{color:C.lightText}}>₹</span><Input placeholder="Shipping cost / unit" type="number" className="pl-6" value={bulkShippingCost} onChange={e=>setBulkShippingCost(e.target.value)}/></div>
-              </div>
+              <p className="text-xs font-bold mb-2" style={{color:"#9a5b0f"}}>Required — shipping cost per unit for this batch (applies to every order in this upload):</p>
+              <div className="relative"><span className="absolute left-3 top-2.5 text-sm" style={{color:C.lightText}}>₹</span><Input placeholder="Shipping cost / unit" type="number" className="pl-6" value={bulkShippingCost} onChange={e=>setBulkShippingCost(e.target.value)}/></div>
               <p className="text-xs mt-2" style={{color:"#9a5b0f"}}>Pre-filled from Financials → Channel Cost Settings. If costs vary a lot per order, consider uploading in smaller batches by cost tier, or adjust individual figures later via the Profit Calculator.</p>
             </div>
           )}
@@ -1399,7 +1390,7 @@ function UploadView({skus,combos,setSkus,reports,setReports,salesLines,setSalesL
 
 /* ═══ MANUAL SINGLE-ORDER ENTRY (for website orders without a bulk export) ═══ */
 function AddOrderForm({channel,skus,combos,setSkus,reports,setReports,salesLines,setSalesLines,financialSettings,logActivity,showToast}){
-  const blank={code:"",qty:1,price:"",orderId:"",buyerName:"",buyerEmail:"",city:"",state:"",date:new Date().toISOString().slice(0,10),packagingCost:financialSettings?.defaultPackagingCost||"",shippingCost:financialSettings?.defaultShippingCost||""};
+  const blank={code:"",qty:1,price:"",orderId:"",buyerName:"",buyerEmail:"",city:"",state:"",date:new Date().toISOString().slice(0,10),shippingCost:financialSettings?.defaultShippingCost||""};
   const [form,setForm]=useState(blank);
   const skuMap=useMemo(()=>Object.fromEntries(skus.map(s=>[s.sku,s])),[skus]);
   const comboMap=useMemo(()=>Object.fromEntries(combos.map(c=>[c.sku,c])),[combos]);
@@ -1413,11 +1404,10 @@ function AddOrderForm({channel,skus,combos,setSkus,reports,setReports,salesLines
     const qty=Number(form.qty)||0;
     if(!code){showToast("error","Choose a SKU or combo.");return;}
     if(qty<=0){showToast("error","Quantity must be greater than 0.");return;}
-    // Website orders must have packaging and shipping cost recorded — these are
-    // real per-order costs that directly affect true profit, and without them
+    // Website orders must have shipping cost recorded — the dominant real
+    // per-order cost that directly affects true profit, and without it
     // Sales Report would silently understate what this order actually cost you.
     if(channel==="website"){
-      if(form.packagingCost===""||Number(form.packagingCost)<0){showToast("error","Enter the packaging cost for this order.");return;}
       if(form.shippingCost===""||Number(form.shippingCost)<0){showToast("error","Enter the shipping/courier cost for this order.");return;}
     }
     const combo=comboMap[code],sku=skuMap[code];
@@ -1435,11 +1425,10 @@ function AddOrderForm({channel,skus,combos,setSkus,reports,setReports,salesLines
     const bMap=Object.fromEntries(skus.map(s=>[s.sku,s])),aMap=Object.fromEntries(newSkus.map(s=>[s.sku,s]));
 
     const unitCost=unitCostOf(code,matchType,skuMap,comboMap);
-    // For Website, fold packaging + shipping into the true per-line cost, so
-    // Sales Report's Earning reflects real profit, not just COGS-based margin.
-    const packagingCost=channel==="website"?Number(form.packagingCost)||0:0;
+    // For Website, fold shipping into the true per-line cost, so Sales
+    // Report's Earning reflects real profit, not just COGS-based margin.
     const shippingCost=channel==="website"?Number(form.shippingCost)||0:0;
-    const cost=(unitCost*qty)+packagingCost+shippingCost;
+    const cost=(unitCost*qty)+shippingCost;
     const price=form.price!==""?Number(form.price):null;
     const revenue=price!=null&&!isNaN(price)?price*qty:0;
     const dateIso=form.date?new Date(form.date).toISOString():new Date().toISOString();
@@ -1450,10 +1439,10 @@ function AddOrderForm({channel,skus,combos,setSkus,reports,setReports,salesLines
       comboLines:combos.map(c=>({sku:c.sku,name:c.name,readyBefore:comboReadiness(c,bMap).ready,readyAfter:comboReadiness(c,aMap).ready,bottleneck:comboReadiness(c,aMap).bottleneck})),
       unmatched:[],skippedDuplicates:0};
 
-    const newLine={id:`${reportId}-0`,reportId,channel,date:dateIso,sku:code,name,matchType,qty,unitCost,cost,revenue,earning:revenue-cost,orderId,buyer:form.buyerName.trim(),city:form.city.trim(),state:form.state.trim(),packagingCost,shippingCost};
+    const newLine={id:`${reportId}-0`,reportId,channel,date:dateIso,sku:code,name,matchType,qty,unitCost,cost,revenue,earning:revenue-cost,orderId,buyer:form.buyerName.trim(),city:form.city.trim(),state:form.state.trim(),shippingCost};
 
     setSkus(newSkus);setReports([report,...reports]);setSalesLines([...salesLines,newLine]);
-    logActivity?.("Order added manually",`[${channel}] ${orderId} — ${code} ×${qty}${channel==="website"?` (packaging ${fmtINR(packagingCost)}, shipping ${fmtINR(shippingCost)})`:""}`);
+    logActivity?.("Order added manually",`[${channel}] ${orderId} — ${code} ×${qty}${channel==="website"?` (shipping ${fmtINR(shippingCost)})`:""}`);
     showToast("success",`Order added — ${name} ×${qty}. 📝`);
     setForm({...blank,date:form.date}); // keep the date for quick consecutive entries
   }
@@ -1486,11 +1475,8 @@ function AddOrderForm({channel,skus,combos,setSkus,reports,setReports,salesLines
         </div>
         {channel==="website"&&(
           <div className="p-3 rounded-xl" style={{backgroundColor:"#FFF3E6"}}>
-            <p className="text-xs font-bold mb-2" style={{color:"#9a5b0f"}}>Required for Website orders — real per-order costs that affect true profit:</p>
-            <div className="grid grid-cols-2 gap-2">
-              <div className="relative"><span className="absolute left-3 top-2.5 text-sm" style={{color:C.lightText}}>₹</span><Input placeholder="Packaging cost" type="number" className="pl-6" value={form.packagingCost} onChange={e=>setForm({...form,packagingCost:e.target.value})}/></div>
-              <div className="relative"><span className="absolute left-3 top-2.5 text-sm" style={{color:C.lightText}}>₹</span><Input placeholder="Shipping/courier cost" type="number" className="pl-6" value={form.shippingCost} onChange={e=>setForm({...form,shippingCost:e.target.value})}/></div>
-            </div>
+            <p className="text-xs font-bold mb-2" style={{color:"#9a5b0f"}}>Required for Website orders — the real per-order cost that affects true profit:</p>
+            <div className="relative"><span className="absolute left-3 top-2.5 text-sm" style={{color:C.lightText}}>₹</span><Input placeholder="Shipping/courier cost" type="number" className="pl-6" value={form.shippingCost} onChange={e=>setForm({...form,shippingCost:e.target.value})}/></div>
           </div>
         )}
       </div>
@@ -1679,127 +1665,45 @@ function CostingPricingView({skus}){
 }
 
 /* ═══ PROFIT CALCULATOR — per-SKU/Combo, channel-aware (Amazon FBA/FBM vs Website) ═══ */
-const AMAZON_FEE_FIELDS=[
-  {key:"referralFee",label:"Referral Fee"},
-  {key:"closingFee",label:"Closing Fee"},
-  {key:"variableClosingFee",label:"Variable Closing Fee"},
-  {key:"fulfilmentCost",label:"Fulfilment Cost"},
-  {key:"storageCost",label:"Storage Cost"},
-  {key:"otherFees",label:"Other Fees, Discounts & Taxes on Fees"},
-  {key:"feeDiscounts",label:"Fee Discounts"},
-];
 const BLANK_CHANNEL={
-  weight:"",category:"",packagingCost:"",brandingCost:"",
-  fba:{sellingPrice:"",referralFee:"",closingFee:"",variableClosingFee:"",fulfilmentCost:"",storageCost:"",otherFees:"",feeDiscounts:""},
-  fbm:{sellingPrice:"",referralFee:"",closingFee:"",variableClosingFee:"",fulfilmentCost:"",storageCost:"",otherFees:"",feeDiscounts:""},
-  website:{sellingPrice:"",shippingCost:"",packagingCost:""},
+  weight:"",category:"",
+  fba:{sellingPrice:"",shippingCost:""},
+  fbm:{sellingPrice:"",shippingCost:""},
+  website:{sellingPrice:"",shippingCost:""},
 };
 
-/* Amazon math: Net Proceeds = Selling Price − (Referral+Closing+VariableClosing+Fulfilment+Storage+Other−FeeDiscounts) − 18% GST on those fees.
-   Matches Amazon's own Revenue Calculator exactly — we don't recompute their fees, we just total what you paste in from there. */
-function calcAmazonChannel(ch,cogs,packagingCost,brandingCost=0){
+/* Simplified by design: Net Profit = Selling Price − Shipping Cost − COGS.
+   Referral fee, closing fee, storage, other Amazon fees, GST-on-fees,
+   packaging, and branding are deliberately NOT tracked here anymore — real
+   account data showed referral fee is consistently ₹0 (the 2026 fee cut) and
+   other fees were small next to shipping, which is the dominant, decisive
+   cost driver. Kept simple and legible rather than comprehensive. */
+function calcChannel(ch,cogs){
   const n=v=>Number(v)||0;
-  const feesTotal=n(ch.referralFee)+n(ch.closingFee)+n(ch.variableClosingFee)+n(ch.fulfilmentCost)+n(ch.storageCost)+n(ch.otherFees)-n(ch.feeDiscounts);
-  const gst=feesTotal*0.18;
-  const netProceeds=n(ch.sellingPrice)-feesTotal-gst;
-  const netProfit=netProceeds-cogs-packagingCost-n(brandingCost);
+  const netProceeds=n(ch.sellingPrice)-n(ch.shippingCost);
+  const netProfit=netProceeds-cogs;
   const margin=n(ch.sellingPrice)>0?(netProfit/n(ch.sellingPrice))*100:0;
-  return{feesTotal,gst,netProceeds,netProfit,margin};
-}
-function calcWebsiteChannel(ch,cogs,gatewayPercent,gatewayFixed,brandingCost=0){
-  const n=v=>Number(v)||0;
-  const gatewayFee=n(ch.sellingPrice)*(n(gatewayPercent)/100)+n(gatewayFixed);
-  const netProceeds=n(ch.sellingPrice)-gatewayFee-n(ch.shippingCost);
-  const netProfit=netProceeds-cogs-n(ch.packagingCost)-n(brandingCost);
-  const margin=n(ch.sellingPrice)>0?(netProfit/n(ch.sellingPrice))*100:0;
-  return{gatewayFee,netProceeds,netProfit,margin};
+  return{netProceeds,netProfit,margin};
 }
 
-/* Shared "true cost per unit" calculator — this is what the ZenkyBox Sales
-   Report uses to show real Earning, not just Revenue minus SKU cost.
-   If the SKU/combo has been configured in Profit Calculator (real Amazon fees
-   pasted in from Seller Central), that configuration is used — the exact same
-   numbers verified there. If not configured, falls back to a partial estimate
-   using the verified Closing Fee slab + 18% tax, with Fulfilment/Packaging/
-   Branding at ₹0 since they're genuinely unknown — clearly flagged as partial
-   so it's never mistaken for a complete number. */
+/* Shared "true cost per unit" calculator — this is what ZenkyBox Sales Report
+   and the P&L Statement use to show real Earning/COGS, not just raw SKU cost.
+   If the SKU/combo has a shipping cost configured in Profit Calculator (for
+   whichever channel the sale came from), that's used. If not configured,
+   falls back to COGS only — shipping unknown, clearly flagged as partial so
+   it's never mistaken for a complete number. */
 function trueUnitCost(sku,unitCost,sellingPrice,channel,channelProfitData,financialSettings){
   const cfg=channelProfitData?.[sku];
-  const packagingCost=Number(cfg?.packagingCost)||Number(financialSettings?.defaultPackagingCost)||0;
-  const brandingCost=Number(cfg?.brandingCost)||0;
-
   if(channel==="website"){
-    // Website packaging/shipping are already folded into unitCost's caller
-    // (salesLine.cost) at upload time since v7.1 — this function only adds
-    // branding on top, since that wasn't part of that earlier fix.
-    return{total:unitCost+brandingCost,amazonFees:0,gst:0,packagingCost:0,brandingCost,method:"full"};
+    const shipping=Number(cfg?.website?.shippingCost)||Number(financialSettings?.defaultShippingCost)||0;
+    const method=cfg?.website?.shippingCost?"full":(financialSettings?.defaultShippingCost?"full":"partial");
+    return{total:unitCost+shipping,shipping,method};
   }
-
-  // Amazon channel
-  const fba=cfg?.fba,fbm=cfg?.fbm;
-  const fbaHasData=fba&&Object.values(fba).some(v=>v!=="");
-  const fbmHasData=fbm&&Object.values(fbm).some(v=>v!=="");
-  const configured=fbaHasData?fba:(fbmHasData?fbm:null);
-  const isFba=fbaHasData;
-  if(configured){
-    const n=v=>Number(v)||0;
-    // FBA's closing fee always comes from the verified slab, never the saved
-    // manual value — keeps this one figure consistent everywhere in the app,
-    // per the platform-wide slab policy, even if saved config predates it.
-    const closingFee=isFba?(lookupClosingFee(configured.sellingPrice||sellingPrice)?.fee||0):n(configured.closingFee);
-    const feesTotal=n(configured.referralFee)+closingFee+n(configured.variableClosingFee)+n(configured.fulfilmentCost)+n(configured.storageCost)+n(configured.otherFees)-n(configured.feeDiscounts);
-    const gst=feesTotal*0.18;
-    return{total:unitCost+feesTotal+gst+packagingCost+brandingCost,amazonFees:feesTotal,gst,packagingCost,brandingCost,method:"full"};
-  }
-  // Partial fallback — verified closing fee slab only, everything else unknown
-  const slab=lookupClosingFee(sellingPrice);
-  const closingFee=slab?.fee||0,tax=slab?.tax||0;
-  return{total:unitCost+closingFee+tax+packagingCost,amazonFees:closingFee,gst:tax,packagingCost,brandingCost:0,method:"partial"};
-}
-
-/* Verified directly against a real Amazon Net Proceeds Report from this
-   account (cross-checked: the 0-299 slab matches "Per-item Selling Fees" of
-   ₹1.18 + its actual ₹0.18 tax seen in that report; the other two slabs match
-   a clean 18% GST calculation on the closing fee). This is real, current data
-   for this account — not a third-party estimate — but Amazon can still revise
-   fees at any time, so it's offered as a one-click fill you can always
-   override, never a silent auto-calculation. */
-const CLOSING_FEE_SLABS=[
-  {min:0,max:299,fee:1.18,tax:0.18,label:"₹0 – ₹299"},
-  {min:300,max:499,fee:22,tax:3.96,label:"₹300 – ₹499"},
-  {min:500,max:999,fee:45,tax:8.1,label:"₹500 – ₹999"},
-];
-function lookupClosingFee(price){
-  const p=Number(price)||0;
-  return CLOSING_FEE_SLABS.find(s=>p>=s.min&&p<=s.max)||null;
-}
-
-function ClosingFeeReferenceCard(){
-  const [open,setOpen]=useState(true);
-  return(
-    <Card className="mb-4">
-      <button onClick={()=>setOpen(!open)} className="w-full flex items-center justify-between">
-        <span className="font-bold text-sm" style={{fontFamily:F.display,color:C.darkText}}>Closing Fee Reference (verified against real account data)</span>
-        {open?<ChevronDown size={16} style={{color:C.lightText}}/>:<ChevronRight size={16} style={{color:C.lightText}}/>}
-      </button>
-      {open&&(
-        <div className="mt-3">
-          <p className="text-xs mb-3" style={{color:C.lightText}}>Cross-checked against a real Amazon Net Proceeds Report from this account — not a third-party guess. Use "Auto-fill from slab" in the calculator below to apply it, always editable.</p>
-          <div className="overflow-x-auto"><table className="w-full text-sm">
-            <thead><tr style={{color:C.lightText}}><th className="py-1.5 pr-3 text-left text-xs uppercase font-bold">Selling Price</th><th className="py-1.5 pr-3 text-left text-xs uppercase font-bold">Closing Fee</th><th className="py-1.5 pr-3 text-left text-xs uppercase font-bold">Tax (18% GST)</th></tr></thead>
-            <tbody>{CLOSING_FEE_SLABS.map(s=>(
-              <tr key={s.label} className="border-t" style={{borderColor:C.border}}>
-                <td className="py-1.5 pr-3">{s.label}</td>
-                <td className="py-1.5 pr-3 font-bold" style={{fontFamily:F.mono,color:C.zenkyPurple}}>{fmtINR(s.fee)}</td>
-                <td className="py-1.5 pr-3" style={{fontFamily:F.mono,color:C.lightText}}>{fmtINR(s.tax)}</td>
-              </tr>
-            ))}</tbody>
-          </table></div>
-          <p className="text-xs mt-2" style={{color:C.lightText}}>Verified for MFN/Easy Ship listings under ₹1,000. Above ₹1,000, or for FBA-specific rates, check Amazon's Revenue Calculator directly — this table hasn't been verified for those bands. The calculator below already applies 18% GST automatically on top of whatever fees you enter, so you don't need to add the tax separately.</p>
-        </div>
-      )}
-    </Card>
-  );
+  // Amazon channel — prefer FBA config, fall back to FBM
+  const fbaShip=cfg?.fba?.shippingCost,fbmShip=cfg?.fbm?.shippingCost;
+  if(fbaShip){return{total:unitCost+Number(fbaShip),shipping:Number(fbaShip),method:"full"};}
+  if(fbmShip){return{total:unitCost+Number(fbmShip),shipping:Number(fbmShip),method:"full"};}
+  return{total:unitCost,shipping:0,method:"partial"};
 }
 
 function ProfitCalculatorView({skus,combos,channelProfitData,setChannelProfitData,financialSettings,logActivity,showToast}){
@@ -1820,41 +1724,29 @@ function ProfitCalculatorView({skus,combos,channelProfitData,setChannelProfitDat
     const existing=channelProfitData[code];
     setForm(existing?{...BLANK_CHANNEL,...existing,fba:{...BLANK_CHANNEL.fba,...existing.fba},fbm:{...BLANK_CHANNEL.fbm,...existing.fbm},website:{...BLANK_CHANNEL.website,...existing.website}}:{
       ...BLANK_CHANNEL,
-      packagingCost:financialSettings.defaultPackagingCost||"",
-      website:{...BLANK_CHANNEL.website,shippingCost:financialSettings.defaultShippingCost||"",packagingCost:financialSettings.defaultPackagingCost||""},
+      website:{...BLANK_CHANNEL.website,shippingCost:financialSettings.defaultShippingCost||""},
     });
   }
 
   function save(){
-    // Save with FBA's closing fee forced to the current verified slab value —
-    // matches what's actually shown/used, not whatever stale value might be
-    // sitting in form state from before the selling price last changed.
-    const toSave={...form,fba:{...form.fba,closingFee:fbaSlab?fbaSlab.fee:0}};
-    setChannelProfitData({...channelProfitData,[selectedCode]:toSave});
+    setChannelProfitData({...channelProfitData,[selectedCode]:form});
     logActivity?.("Profit calculator updated",selectedCode);
     showToast("success","Saved. ✨");
   }
 
   const selected=allProducts.find(p=>p.code===selectedCode);
   const cogs=selected?.procurementCost||0;
-  // FBA closing fee is ALWAYS the verified slab value, never manually entered
-  // — per the design decision to keep this one figure consistent platform-wide
-  // rather than relying on it being pasted/updated correctly every time.
-  const fbaSlab=lookupClosingFee(form.fba.sellingPrice);
-  const fbaWithSlabFee={...form.fba,closingFee:fbaSlab?fbaSlab.fee:0};
-  const fbaResult=calcAmazonChannel(fbaWithSlabFee,cogs,Number(form.packagingCost)||0,form.brandingCost);
-  const fbmResult=calcAmazonChannel(form.fbm,cogs,Number(form.packagingCost)||0,form.brandingCost);
-  const websiteResult=calcWebsiteChannel(form.website,cogs,financialSettings.gatewayFeePercent,financialSettings.gatewayFeeFixed,form.brandingCost);
+  const fbaResult=calcChannel(form.fba,cogs);
+  const fbmResult=calcChannel(form.fbm,cogs);
+  const websiteResult=calcChannel(form.website,cogs);
 
   return(
     <div>
-      <SectionHeader title="Profit Calculator" subtitle="Real per-SKU and per-combo profit — Amazon FBA/FBM fees pasted from Amazon's own Revenue Calculator, Website fees computed from your Channel Cost Settings."/>
+      <SectionHeader title="Profit Calculator" subtitle="Real per-SKU and per-combo profit — Selling Price, Shipping Cost, and COGS. Kept deliberately simple: shipping is the dominant cost driver, other Amazon fees are consistently negligible for this catalog."/>
 
       <div className="mb-4 p-3 rounded-xl text-xs" style={{backgroundColor:C.bgLight,color:C.lightText}}>
-        <strong>Why Amazon fees are entered manually:</strong> Amazon revises referral/closing/fulfilment fees periodically (there were two revisions in recent months alone) — a hand-built rate card here would silently go stale. Open Amazon Seller Central's Revenue Calculator for this product, copy the numbers shown there into the matching fields below. Website fees, by contrast, are computed automatically from your Channel Cost Settings in Financials, since those are rates you control directly.
+        <strong>Why this is kept simple:</strong> real account data showed referral fee is consistently ₹0 (the 2026 fee cut applies across this catalog) and other Amazon fees were small next to shipping — which was the single biggest driver of margin loss on self-ship orders. Rather than track a full fee stack most of which nets to near-zero, this calculator focuses on the number that actually moves the needle: Selling Price − Shipping Cost − COGS. Enter the real shipping cost from your Amazon settlement report or courier invoice.
       </div>
-
-      <ClosingFeeReferenceCard/>
 
       <div className="grid sm:grid-cols-3 gap-4">
         <Card className="sm:col-span-1">
@@ -1883,11 +1775,9 @@ function ProfitCalculatorView({skus,combos,channelProfitData,setChannelProfitDat
                   </div>
                   <PrimaryButton onClick={save}><Save size={15}/>Save</PrimaryButton>
                 </div>
-                <div className="grid sm:grid-cols-4 gap-2">
+                <div className="grid sm:grid-cols-2 gap-2">
                   <Input placeholder="Weight (grams)" type="number" value={form.weight} onChange={e=>setForm({...form,weight:e.target.value})}/>
                   <Input placeholder="Amazon Category" value={form.category} onChange={e=>setForm({...form,category:e.target.value})}/>
-                  <div className="relative"><span className="absolute left-3 top-2.5 text-sm" style={{color:C.lightText}}>₹</span><Input placeholder="Packaging Cost" type="number" className="pl-6" value={form.packagingCost} onChange={e=>setForm({...form,packagingCost:e.target.value})}/></div>
-                  <div className="relative"><span className="absolute left-3 top-2.5 text-sm" style={{color:C.lightText}}>₹</span><Input placeholder="Branding Cost" type="number" className="pl-6" value={form.brandingCost} onChange={e=>setForm({...form,brandingCost:e.target.value})}/></div>
                 </div>
               </Card>
 
@@ -1899,49 +1789,21 @@ function ProfitCalculatorView({skus,combos,channelProfitData,setChannelProfitDat
                 ))}
               </div>
 
-              {(channelTab==="fba"||channelTab==="fbm")&&(()=>{
-                const key=channelTab,result=channelTab==="fba"?fbaResult:fbmResult;
+              {(channelTab==="fba"||channelTab==="fbm"||channelTab==="website")&&(()=>{
+                const key=channelTab;
+                const result=channelTab==="fba"?fbaResult:channelTab==="fbm"?fbmResult:websiteResult;
                 return(
                   <Card>
                     <div className="grid sm:grid-cols-2 gap-3 mb-4">
-                      <div className="relative"><label className="text-xs font-bold uppercase block mb-1" style={{color:C.lightText}}>Item Price (Selling Price)</label><span className="absolute left-3 top-8 text-sm" style={{color:C.lightText}}>₹</span><Input type="number" className="pl-6" value={form[key].sellingPrice} onChange={e=>setForm({...form,[key]:{...form[key],sellingPrice:e.target.value}})}/></div>
-                      {key==="fbm"&&(
-                        <div className="flex items-end">
-                          <button onClick={()=>{
-                            const slab=lookupClosingFee(form[key].sellingPrice);
-                            if(!slab){showToast("error","No verified slab for this price — check Amazon's Revenue Calculator directly.");return;}
-                            setForm({...form,[key]:{...form[key],closingFee:slab.fee}});
-                            showToast("success",`Filled Closing Fee: ${fmtINR(slab.fee)} (${slab.label} slab). GST is added automatically.`);
-                          }} className="px-3 py-2.5 rounded-xl text-xs font-bold border-2" style={{borderColor:C.zenkyPurple,color:C.zenkyPurple,fontFamily:F.display}}>
-                            Auto-fill Closing Fee from slab
-                          </button>
-                        </div>
-                      )}
+                      <div className="relative"><label className="text-xs font-bold uppercase block mb-1" style={{color:C.lightText}}>Selling Price</label><span className="absolute left-3 top-8 text-sm" style={{color:C.lightText}}>₹</span><Input type="number" className="pl-6" value={form[key].sellingPrice} onChange={e=>setForm({...form,[key]:{...form[key],sellingPrice:e.target.value}})}/></div>
+                      <div className="relative"><label className="text-xs font-bold uppercase block mb-1" style={{color:C.lightText}}>Shipping Cost</label><span className="absolute left-3 top-8 text-sm" style={{color:C.lightText}}>₹</span><Input type="number" className="pl-6" value={form[key].shippingCost} onChange={e=>setForm({...form,[key]:{...form[key],shippingCost:e.target.value}})}/></div>
                     </div>
-                    <div className="text-xs font-bold uppercase mb-2" style={{color:C.lightText}}>{key==="fba"?"Paste the rest from Amazon's Revenue Calculator":"Paste from Amazon's Revenue Calculator"}</div>
-                    <div className="grid sm:grid-cols-2 gap-3 mb-4">
-                      {key==="fba"&&(()=>{
-                        const slab=lookupClosingFee(form.fba.sellingPrice);
-                        return(
-                          <div className="relative">
-                            <label className="text-xs block mb-1" style={{color:C.lightText}}>Closing Fee <span style={{color:C.zenkyPurple,fontWeight:700}}>(auto, verified slab)</span></label>
-                            <span className="absolute left-3 top-8 text-sm" style={{color:C.lightText}}>₹</span>
-                            <Input type="number" className="pl-6" value={slab?slab.fee:0} disabled style={{backgroundColor:C.bgLight,color:C.lightText}}/>
-                            {!slab&&<p className="text-xs mt-1" style={{color:C.zenkyPink}}>No verified slab for this price — defaulting to ₹0, check Amazon's Revenue Calculator and log as a new slab if needed.</p>}
-                          </div>
-                        );
-                      })()}
-                      {AMAZON_FEE_FIELDS.filter(f=>!(key==="fba"&&f.key==="closingFee")).map(f=>(
-                        <div key={f.key} className="relative"><label className="text-xs block mb-1" style={{color:C.lightText}}>{f.label}</label><span className="absolute left-3 top-8 text-sm" style={{color:C.lightText}}>₹</span><Input type="number" className="pl-6" value={form[key][f.key]} onChange={e=>setForm({...form,[key]:{...form[key],[f.key]:e.target.value}})}/></div>
-                      ))}
-                    </div>
+                    <p className="text-xs mb-4" style={{color:C.lightText}}>{key==="website"?"From your courier invoice or Financials → Channel Cost Settings default.":"From Amazon's settlement/Net Proceeds Report (Fulfilment Cost / MFN Postage Fees) for this listing."}</p>
                     <div className="rounded-xl p-4 space-y-2" style={{backgroundColor:C.bgLight}}>
-                      <div className="flex justify-between text-sm"><span style={{color:C.lightText}}>Total Amazon Fees</span><span className="font-bold" style={{fontFamily:F.mono,color:C.zenkyOrange}}>{fmtINR(result.feesTotal)}</span></div>
-                      <div className="flex justify-between text-sm"><span style={{color:C.lightText}}>GST on Fees (18%)</span><span className="font-bold" style={{fontFamily:F.mono,color:C.zenkyOrange}}>{fmtINR(result.gst)}</span></div>
+                      <div className="flex justify-between text-sm"><span style={{color:C.lightText}}>Selling Price</span><span className="font-bold" style={{fontFamily:F.mono,color:C.darkText}}>{fmtINR(Number(form[key].sellingPrice)||0)}</span></div>
+                      <div className="flex justify-between text-sm"><span style={{color:C.lightText}}>− Shipping Cost</span><span className="font-bold" style={{fontFamily:F.mono,color:C.zenkyOrange}}>{fmtINR(Number(form[key].shippingCost)||0)}</span></div>
                       <div className="flex justify-between text-sm"><span style={{color:C.lightText}}>Net Proceeds</span><span className="font-bold" style={{fontFamily:F.mono,color:C.zenkyPurple}}>{fmtINR(result.netProceeds)}</span></div>
-                      <div className="flex justify-between text-sm"><span style={{color:C.lightText}}>− COGS</span><span className="font-bold" style={{fontFamily:F.mono,color:C.zenkyOrange}}>{fmtINR(cogs)}</span></div>
-                      <div className="flex justify-between text-sm"><span style={{color:C.lightText}}>− Packaging Cost</span><span className="font-bold" style={{fontFamily:F.mono,color:C.zenkyOrange}}>{fmtINR(Number(form.packagingCost)||0)}</span></div>
-                      <div className="flex justify-between text-sm"><span style={{color:C.lightText}}>− Branding Cost</span><span className="font-bold" style={{fontFamily:F.mono,color:C.zenkyOrange}}>{fmtINR(Number(form.brandingCost)||0)}</span></div>
+                      <div className="flex justify-between text-sm"><span style={{color:C.lightText}}>− COGS (Procurement Cost)</span><span className="font-bold" style={{fontFamily:F.mono,color:C.zenkyOrange}}>{fmtINR(cogs)}</span></div>
                       <div className="flex justify-between pt-2" style={{borderTop:`2px solid ${C.border}`}}>
                         <span className="font-bold" style={{fontFamily:F.display,color:C.darkText}}>Net Profit</span>
                         <span className="font-black text-lg" style={{fontFamily:F.mono,color:result.netProfit>=0?C.mintGreen:C.zenkyPink}}>{fmtINR(result.netProfit)}</span>
@@ -1955,36 +1817,9 @@ function ProfitCalculatorView({skus,combos,channelProfitData,setChannelProfitDat
                 );
               })()}
 
-              {channelTab==="website"&&(
-                <Card>
-                  <div className="grid sm:grid-cols-3 gap-3 mb-4">
-                    <div className="relative"><label className="text-xs font-bold uppercase block mb-1" style={{color:C.lightText}}>Selling Price</label><span className="absolute left-3 top-8 text-sm" style={{color:C.lightText}}>₹</span><Input type="number" className="pl-6" value={form.website.sellingPrice} onChange={e=>setForm({...form,website:{...form.website,sellingPrice:e.target.value}})}/></div>
-                    <div className="relative"><label className="text-xs block mb-1" style={{color:C.lightText}}>Shipping/Courier Cost</label><span className="absolute left-3 top-8 text-sm" style={{color:C.lightText}}>₹</span><Input type="number" className="pl-6" value={form.website.shippingCost} onChange={e=>setForm({...form,website:{...form.website,shippingCost:e.target.value}})}/></div>
-                    <div className="relative"><label className="text-xs block mb-1" style={{color:C.lightText}}>Packaging Cost (Website)</label><span className="absolute left-3 top-8 text-sm" style={{color:C.lightText}}>₹</span><Input type="number" className="pl-6" value={form.website.packagingCost} onChange={e=>setForm({...form,website:{...form.website,packagingCost:e.target.value}})}/></div>
-                  </div>
-                  <p className="text-xs mb-4" style={{color:C.lightText}}>Payment gateway fee ({financialSettings.gatewayFeePercent||0}% + {fmtINR(Number(financialSettings.gatewayFeeFixed)||0)}) is pulled automatically from Financials → Channel Cost Settings.</p>
-                  <div className="rounded-xl p-4 space-y-2" style={{backgroundColor:C.bgLight}}>
-                    <div className="flex justify-between text-sm"><span style={{color:C.lightText}}>Payment Gateway Fee</span><span className="font-bold" style={{fontFamily:F.mono,color:C.zenkyOrange}}>{fmtINR(websiteResult.gatewayFee)}</span></div>
-                    <div className="flex justify-between text-sm"><span style={{color:C.lightText}}>− Shipping/Courier Cost</span><span className="font-bold" style={{fontFamily:F.mono,color:C.zenkyOrange}}>{fmtINR(Number(form.website.shippingCost)||0)}</span></div>
-                    <div className="flex justify-between text-sm"><span style={{color:C.lightText}}>Net Proceeds</span><span className="font-bold" style={{fontFamily:F.mono,color:C.zenkyPurple}}>{fmtINR(websiteResult.netProceeds)}</span></div>
-                    <div className="flex justify-between text-sm"><span style={{color:C.lightText}}>− COGS</span><span className="font-bold" style={{fontFamily:F.mono,color:C.zenkyOrange}}>{fmtINR(cogs)}</span></div>
-                    <div className="flex justify-between text-sm"><span style={{color:C.lightText}}>− Packaging Cost</span><span className="font-bold" style={{fontFamily:F.mono,color:C.zenkyOrange}}>{fmtINR(Number(form.website.packagingCost)||0)}</span></div>
-                    <div className="flex justify-between text-sm"><span style={{color:C.lightText}}>− Branding Cost</span><span className="font-bold" style={{fontFamily:F.mono,color:C.zenkyOrange}}>{fmtINR(Number(form.brandingCost)||0)}</span></div>
-                    <div className="flex justify-between pt-2" style={{borderTop:`2px solid ${C.border}`}}>
-                      <span className="font-bold" style={{fontFamily:F.display,color:C.darkText}}>Net Profit</span>
-                      <span className="font-black text-lg" style={{fontFamily:F.mono,color:websiteResult.netProfit>=0?C.mintGreen:C.zenkyPink}}>{fmtINR(websiteResult.netProfit)}</span>
-                    </div>
-                    <div className="flex justify-between">
-                      <span className="font-bold" style={{fontFamily:F.display,color:C.darkText}}>Net Margin</span>
-                      <span className="font-black text-lg" style={{fontFamily:F.mono,color:websiteResult.margin>=0?C.mintGreen:C.zenkyPink}}>{websiteResult.margin.toFixed(1)}%</span>
-                    </div>
-                  </div>
-                </Card>
-              )}
-
               {selected.type==="Combo"&&(
                 <div className="mt-4 p-3 rounded-xl text-xs" style={{backgroundColor:"#FFF3E6",color:"#9a5b0f"}}>
-                  This combo's Amazon fees apply to the combo's own listing (its own weight and selling price) — not per component. COGS above is already the sum of every component's procurement cost.
+                  This combo's shipping cost applies to the combo's own listing (its own weight and selling price) — not per component. COGS above is already the sum of every component's procurement cost.
                 </div>
               )}
             </div>
@@ -2567,34 +2402,19 @@ function ChannelCostSettingsCard({financialSettings,setFinancialSettings,logActi
   const [form,setForm]=useState(financialSettings);
   function save(){
     setFinancialSettings(form);
-    logActivity?.("Channel cost settings updated",`Gateway fee ${form.gatewayFeePercent||0}% + ₹${form.gatewayFeeFixed||0}, default shipping ₹${form.defaultShippingCost||0}, default packaging ₹${form.defaultPackagingCost||0}`);
+    logActivity?.("Channel cost settings updated",`Default shipping ₹${form.defaultShippingCost||0}`);
     showToast("success","Channel cost settings saved. ✨");
   }
   return(
     <Card className="mb-6">
       <h3 className="font-bold text-lg mb-2" style={{fontFamily:F.display,color:C.darkText}}>Channel Cost Settings</h3>
       <p className="text-xs mb-4" style={{color:C.lightText}}>
-        Default rates for Website-channel sales — payment gateway fees and shipping/packaging costs that Amazon's own listings don't have (those are already reflected via Amazon's fee entries per SKU). These become the starting point for the per-SKU profit calculator; override per product where actual costs differ.
+        Default shipping cost for Website-channel sales — the one figure Amazon's own listings don't have (Amazon's shipping is tracked per-SKU in Profit Calculator instead). This becomes the starting point for new orders; override per product or per order where actual cost differs.
       </p>
-      <div className="grid sm:grid-cols-2 gap-4 mb-4">
-        <div>
-          <label className="text-xs font-bold uppercase block mb-1" style={{color:C.lightText}}>Payment Gateway Fee</label>
-          <div className="flex gap-2">
-            <div className="relative flex-1"><Input placeholder="%" type="number" value={form.gatewayFeePercent} onChange={e=>setForm({...form,gatewayFeePercent:e.target.value})}/><span className="absolute right-3 top-2.5 text-sm" style={{color:C.lightText}}>%</span></div>
-            <div className="relative flex-1"><span className="absolute left-3 top-2.5 text-sm" style={{color:C.lightText}}>₹</span><Input placeholder="Fixed" type="number" className="pl-6" value={form.gatewayFeeFixed} onChange={e=>setForm({...form,gatewayFeeFixed:e.target.value})}/></div>
-          </div>
-          <p className="text-xs mt-1" style={{color:C.lightText}}>e.g. Razorpay is typically ~2% + fixed fee per transaction — confirm your actual rate.</p>
-        </div>
-        <div>
-          <label className="text-xs font-bold uppercase block mb-1" style={{color:C.lightText}}>Default Shipping/Courier Cost (Website only)</label>
-          <div className="relative"><span className="absolute left-3 top-2.5 text-sm" style={{color:C.lightText}}>₹</span><Input placeholder="Per order" type="number" className="pl-6" value={form.defaultShippingCost} onChange={e=>setForm({...form,defaultShippingCost:e.target.value})}/></div>
-          <p className="text-xs mt-1" style={{color:C.lightText}}>Not used for Amazon — Amazon's fulfilment cost already includes delivery.</p>
-        </div>
-        <div>
-          <label className="text-xs font-bold uppercase block mb-1" style={{color:C.lightText}}>Default Packaging Cost (both channels)</label>
-          <div className="relative"><span className="absolute left-3 top-2.5 text-sm" style={{color:C.lightText}}>₹</span><Input placeholder="Per unit" type="number" className="pl-6" value={form.defaultPackagingCost} onChange={e=>setForm({...form,defaultPackagingCost:e.target.value})}/></div>
-          <p className="text-xs mt-1" style={{color:C.lightText}}>Applies whether the sale is Amazon or Website — override per SKU if a specific product costs more/less to pack.</p>
-        </div>
+      <div className="mb-4">
+        <label className="text-xs font-bold uppercase block mb-1" style={{color:C.lightText}}>Default Shipping/Courier Cost (Website only)</label>
+        <div className="relative max-w-xs"><span className="absolute left-3 top-2.5 text-sm" style={{color:C.lightText}}>₹</span><Input placeholder="Per order" type="number" className="pl-6" value={form.defaultShippingCost} onChange={e=>setForm({...form,defaultShippingCost:e.target.value})}/></div>
+        <p className="text-xs mt-1" style={{color:C.lightText}}>Not used for Amazon — Amazon's shipping cost is entered per SKU in Profit Calculator.</p>
       </div>
       <PrimaryButton onClick={save}><Save size={15}/>Save Channel Cost Settings</PrimaryButton>
     </Card>
@@ -3368,20 +3188,17 @@ function FinancialsView({investors,setInvestors,investments,setInvestments,expen
 
     // ── Shared: product/combo revenue+COGS, sourced from Sales Report data (salesLines) ──
     // COGS here uses the same auto-calculation as ZenkyBox Sales Report — not
-    // just SKU procurement cost, but the fuller true cost (Amazon fees where
-    // a SKU/combo is configured in Profit Calculator, else the verified
-    // Closing Fee slab; plus packaging and branding). Keeps this number
-    // consistent with what Sales Report shows for the same sales, rather than
-    // two different "cost" figures existing in the app for the same data.
+    // COGS here uses the same auto-calculation as ZenkyBox Sales Report — not
+    // just SKU procurement cost, but SKU cost + Shipping (the dominant real
+    // cost driver per verified account data). Keeps this number consistent
+    // with what Sales Report shows for the same sales, rather than two
+    // different "cost" figures existing in the app for the same data.
     function trueLineBreakdown(l){
       const price=l.qty>0?l.revenue/l.qty:0;
       const tc=trueUnitCost(l.sku,l.unitCost,price,l.channel||"amazon",channelProfitData,financialSettings);
       return{
         skuCost:l.unitCost*l.qty,
-        amazonFees:tc.amazonFees*l.qty,
-        gst:tc.gst*l.qty,
-        packaging:tc.packagingCost*l.qty,
-        branding:tc.brandingCost*l.qty,
+        shipping:tc.shipping*l.qty,
         total:tc.total*l.qty,
         method:tc.method,
       };
@@ -3391,11 +3208,11 @@ function FinancialsView({investors,setInvestors,investments,setInvestments,expen
       const bySku={},byCombo={};
       lines.forEach(l=>{
         const bucket=l.matchType==="combo"?byCombo:bySku;
-        if(!bucket[l.sku])bucket[l.sku]={code:l.sku,name:l.name,qty:0,revenue:0,cogs:0,skuCost:0,amazonFees:0,gst:0,packaging:0,branding:0,anyPartial:false};
+        if(!bucket[l.sku])bucket[l.sku]={code:l.sku,name:l.name,qty:0,revenue:0,cogs:0,skuCost:0,shipping:0,anyPartial:false};
         const bd=trueLineBreakdown(l);
         const row=bucket[l.sku];
         row.qty+=l.qty;row.revenue+=l.revenue;row.cogs+=bd.total;
-        row.skuCost+=bd.skuCost;row.amazonFees+=bd.amazonFees;row.gst+=bd.gst;row.packaging+=bd.packaging;row.branding+=bd.branding;
+        row.skuCost+=bd.skuCost;row.shipping+=bd.shipping;
         if(bd.method==="partial")row.anyPartial=true;
       });
       return{skuRows:Object.values(bySku).sort((a,b)=>b.revenue-a.revenue),comboRows:Object.values(byCombo).sort((a,b)=>b.revenue-a.revenue)};
