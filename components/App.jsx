@@ -761,7 +761,7 @@ function ComboReadinessView({skus,combos}){
 }
 
 /* ═══ CATALOG ═══ */
-function Catalog({skus,setSkus,showToast,role,logActivity}){
+function Catalog({skus,setSkus,combos,setCombos,salesLines,setSalesLines,channelProfitData,setChannelProfitData,showToast,role,logActivity}){
   const blank={sku:"",name:"",stock:"",reorderLevel:"",procurementCost:"",images:[]};
   const [form,setForm]=useState(blank);
   const [editingSku,setEditingSku]=useState(null);
@@ -793,9 +793,33 @@ function Catalog({skus,setSkus,showToast,role,logActivity}){
   }
 
   function saveEdit(code){
-    setSkus(skus.map(s=>s.sku===code?{...s,name:editValues.name,stock:Number(editValues.stock)||0,reorderLevel:Number(editValues.reorderLevel)||0,procurementCost:Number(editValues.procurementCost)||0,images:editValues.images||[]}:s));
-    setEditingSku(null);showToast("success","Saved. ✨");
-    logActivity?.("SKU edited",code);
+    const newCode=(editValues.sku||"").trim();
+    if(!newCode){showToast("error","SKU code can't be empty.");return;}
+    const renaming=newCode!==code;
+    if(renaming&&skus.some(s=>s.sku===newCode)){showToast("error",`"${newCode}" already exists — choose a different code.`);return;}
+
+    setSkus(skus.map(s=>s.sku===code?{...s,sku:newCode,name:editValues.name,stock:Number(editValues.stock)||0,reorderLevel:Number(editValues.reorderLevel)||0,procurementCost:Number(editValues.procurementCost)||0,images:editValues.images||[]}:s));
+
+    if(renaming){
+      // Cascade the rename everywhere this code is used as a reference, so
+      // combos/history/profit data don't silently point at a code that no
+      // longer exists. This is the whole reason editing the code is risky
+      // enough to need this — a plain rename-in-place would break all of these.
+      setCombos?.(combos.map(c=>({...c,components:c.components?.map(comp=>comp.sku===code?{...comp,sku:newCode}:comp)})));
+      setSalesLines?.(salesLines.map(l=>l.sku===code?{...l,sku:newCode}:l));
+      if(channelProfitData?.[code]){
+        const updated={...channelProfitData};
+        updated[newCode]=updated[code];
+        delete updated[code];
+        setChannelProfitData?.(updated);
+      }
+      logActivity?.("SKU code renamed",`${code} → ${newCode} (updated combos, sales history, and profit calculator data)`);
+      showToast("success",`Renamed ${code} → ${newCode}. Combos, sales history, and Profit Calculator data updated. ✨`);
+    }else{
+      logActivity?.("SKU edited",code);
+      showToast("success","Saved. ✨");
+    }
+    setEditingSku(null);
   }
 
   const catalogExport={
@@ -872,7 +896,7 @@ function Catalog({skus,setSkus,showToast,role,logActivity}){
                   return(
                     <tr key={s.sku} className="border-t" style={{borderColor:C.border}}>
                       <td className="py-2 pr-2 hidden sm:table-cell">{s.images?.[0]&&<img src={s.images[0]} alt="" className="w-8 h-8 rounded object-cover"/>}</td>
-                      <td className="py-2 pr-2" style={{fontFamily:F.mono,fontWeight:600,color:C.darkText,whiteSpace:"nowrap"}}>{s.sku}</td>
+                      <td className="py-2 pr-2" style={{fontFamily:F.mono,fontWeight:600,color:C.darkText,whiteSpace:"nowrap"}}>{isEdit?<Input value={editValues.sku} onChange={e=>setEditValues({...editValues,sku:e.target.value})} className="w-32" title="Renaming updates every combo, sales record, and Profit Calculator entry that references this code."/>:s.sku}</td>
                       <td className="py-2 pr-2">{isEdit?<Input value={editValues.name} onChange={e=>setEditValues({...editValues,name:e.target.value})}/>:s.name}</td>
                       <td className="py-2 pr-2">{isEdit?<Input type="number" value={editValues.stock} onChange={e=>setEditValues({...editValues,stock:e.target.value})} className="w-20"/>:<span style={{fontFamily:F.mono,fontWeight:600}}>{fmt(s.stock)}</span>}</td>
                       <td className="py-2 pr-2 hidden md:table-cell">{isEdit?<Input type="number" value={editValues.reorderLevel} onChange={e=>setEditValues({...editValues,reorderLevel:e.target.value})} className="w-20"/>:<span style={{fontFamily:F.mono}}>{fmt(s.reorderLevel)}</span>}</td>
@@ -883,7 +907,7 @@ function Catalog({skus,setSkus,showToast,role,logActivity}){
                           <div className="flex items-center gap-1">
                             {isEdit?(<><GhostButton title="Save" onClick={()=>saveEdit(s.sku)}><Check size={13}/></GhostButton><GhostButton title="Cancel" onClick={()=>setEditingSku(null)}><X size={13}/></GhostButton></>)
                             :pendingDelete===s.sku?(<><GhostButton title="Confirm" onClick={()=>{setSkus(skus.filter(x=>x.sku!==s.sku));setPendingDelete(null);showToast("success",`Removed ${s.sku}.`);logActivity?.("SKU deleted",s.sku);}}><Check size={13}/></GhostButton><GhostButton title="Cancel" onClick={()=>setPendingDelete(null)}><X size={13}/></GhostButton></>)
-                            :(<><GhostButton title="Edit" onClick={()=>{setEditingSku(s.sku);setEditValues({name:s.name,stock:s.stock,reorderLevel:s.reorderLevel,procurementCost:s.procurementCost||0,images:s.images||[]});}}><Pencil size={13}/></GhostButton><GhostButton title="Delete" onClick={()=>setPendingDelete(s.sku)}><Trash2 size={13}/></GhostButton></>)}
+                            :(<><GhostButton title="Edit" onClick={()=>{setEditingSku(s.sku);setEditValues({sku:s.sku,name:s.name,stock:s.stock,reorderLevel:s.reorderLevel,procurementCost:s.procurementCost||0,images:s.images||[]});}}><Pencil size={13}/></GhostButton><GhostButton title="Delete" onClick={()=>setPendingDelete(s.sku)}><Trash2 size={13}/></GhostButton></>)}
                           </div>
                         )}
                       </td>
@@ -4269,7 +4293,7 @@ export default function App(){
               {view==="dashboard"&&<Dashboard skus={skus} comboList={comboList}/>}
               {view==="combo-readiness"&&<ComboReadinessView skus={skus} combos={combos}/>}
               {view==="bulk-import"&&<BulkImportView skus={skus} combos={combos} setSkus={setSkus} setCombos={setCombos} showToast={showToast} logActivity={logActivity}/>}
-              {view==="catalog"&&<Catalog skus={skus} setSkus={setSkus} showToast={showToast} role={role} logActivity={logActivity}/>}
+              {view==="catalog"&&<Catalog skus={skus} setSkus={setSkus} combos={combos} setCombos={setCombos} salesLines={salesLines} setSalesLines={setSalesLines} channelProfitData={channelProfitData} setChannelProfitData={setChannelProfitData} showToast={showToast} role={role} logActivity={logActivity}/>}
               {view==="combos"&&<CombosView skus={skus} combos={combos} setCombos={setCombos} showToast={showToast} role={role} logActivity={logActivity}/>}
               {view==="upload"&&<UploadView skus={skus} combos={combos} setSkus={setSkus} reports={reports} setReports={setReports} salesLines={salesLines} setSalesLines={setSalesLines} financialSettings={financialSettings} logActivity={logActivity} showToast={showToast}/>}
               {view==="reports"&&<ReportsView reports={reports} skus={skus} combos={combos}/>}
