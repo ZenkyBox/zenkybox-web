@@ -1782,6 +1782,7 @@ function ClosingFeeReferenceCard(){
 }
 
 function ProfitCalculatorView({skus,combos,channelProfitData,setChannelProfitData,financialSettings,logActivity,showToast}){
+  const [viewMode,setViewMode]=useState("single"); // "single" | "bulk"
   const [selectedCode,setSelectedCode]=useState(null);
   const [channelTab,setChannelTab]=useState("fba");
   const [query,setQuery]=useState("");
@@ -1826,6 +1827,18 @@ function ProfitCalculatorView({skus,combos,channelProfitData,setChannelProfitDat
     <div>
       <SectionHeader title="Profit Calculator" subtitle="Real per-SKU and per-combo profit — Selling Price, Shipping, Closing Fee (Amazon), GST on those fees, Packaging, and COGS."/>
 
+      <div className="flex gap-1.5 mb-4">
+        {[{id:"single",label:"Single Product"},{id:"bulk",label:"Bulk Edit"}].map(m=>(
+          <button key={m.id} onClick={()=>setViewMode(m.id)} className="px-3.5 py-2 rounded-full text-xs font-bold transition-colors" style={{backgroundColor:viewMode===m.id?C.zenkyPurple:C.softWhite,color:viewMode===m.id?C.softWhite:C.darkText,border:`2px solid ${viewMode===m.id?C.zenkyPurple:C.border}`,fontFamily:F.display}}>
+            {m.label}
+          </button>
+        ))}
+      </div>
+
+      {viewMode==="bulk"?(
+        <BulkEditTable skus={skus} combos={combos} channelProfitData={channelProfitData} setChannelProfitData={setChannelProfitData} financialSettings={financialSettings} logActivity={logActivity} showToast={showToast}/>
+      ):(
+      <>
       <div className="mb-4 p-3 rounded-xl text-xs" style={{backgroundColor:C.bgLight,color:C.lightText}}>
         <strong>What's tracked, and why:</strong> Selling Price, Shipping Cost, Packaging Cost, and — for Amazon — Closing Fee with 18% GST on top (matching how Amazon actually charges GST on its fees). Referral fee, variable closing fee, storage, and other Amazon fees stay excluded, since real account data showed referral fee is consistently ₹0 (the 2026 fee cut) and the rest were negligible next to shipping and closing fee.
       </div>
@@ -1937,6 +1950,124 @@ function ProfitCalculatorView({skus,combos,channelProfitData,setChannelProfitDat
           )}
         </div>
       </div>
+      </>
+      )}
+    </div>
+  );
+}
+
+/* Bulk-edit table — one channel at a time, every SKU/combo as an editable
+   row, so configuring many products doesn't mean clicking into each one
+   individually. Edits are staged locally and written all at once on Save,
+   so a half-filled table never partially overwrites saved data. */
+function BulkEditTable({skus,combos,channelProfitData,setChannelProfitData,financialSettings,logActivity,showToast}){
+  const [bulkChannel,setBulkChannel]=useState("fba"); // "fba" | "fbm" | "website"
+  const [query,setQuery]=useState("");
+
+  const allProducts=useMemo(()=>[
+    ...skus.map(s=>({code:s.sku,name:s.name,type:"SKU",procurementCost:Number(s.procurementCost||0)})),
+    ...combos.map(c=>({code:c.sku,name:c.name,type:"Combo",procurementCost:c.components?.reduce((sum,comp)=>{const s=skus.find(x=>x.sku===comp.sku);return sum+(Number(s?.procurementCost||0)*(comp.qty||1));},0)||0})),
+  ],[skus,combos]);
+  const filtered=allProducts.filter(p=>!query.trim()||p.code.toLowerCase().includes(query.toLowerCase())||p.name.toLowerCase().includes(query.toLowerCase()));
+
+  // Staged edits: {code: {sellingPrice, shippingCost, closingFee, packagingCost}}
+  const [rows,setRows]=useState(()=>{
+    const initial={};
+    allProducts.forEach(p=>{
+      const cfg=channelProfitData[p.code];
+      const ch=cfg?.[bulkChannel]||{};
+      initial[p.code]={sellingPrice:ch.sellingPrice||"",shippingCost:ch.shippingCost||"",closingFee:ch.closingFee||"",packagingCost:cfg?.packagingCost||""};
+    });
+    return initial;
+  });
+
+  function switchChannel(newChannel){
+    setBulkChannel(newChannel);
+    const initial={};
+    allProducts.forEach(p=>{
+      const cfg=channelProfitData[p.code];
+      const ch=cfg?.[newChannel]||{};
+      initial[p.code]={sellingPrice:ch.sellingPrice||"",shippingCost:ch.shippingCost||"",closingFee:ch.closingFee||"",packagingCost:cfg?.packagingCost||""};
+    });
+    setRows(initial);
+  }
+
+  function updateRow(code,field,value){
+    setRows({...rows,[code]:{...rows[code],[field]:value}});
+  }
+
+  function saveAll(){
+    const updated={...channelProfitData};
+    let count=0;
+    Object.entries(rows).forEach(([code,r])=>{
+      const hasData=r.sellingPrice||r.shippingCost||r.closingFee||r.packagingCost;
+      if(!hasData)return;
+      count++;
+      const existing=updated[code]||{...BLANK_CHANNEL};
+      const closingFee=bulkChannel==="fba"?(lookupClosingFee(r.sellingPrice)?.fee||0):r.closingFee;
+      updated[code]={
+        ...existing,
+        packagingCost:r.packagingCost,
+        [bulkChannel]:bulkChannel==="website"
+          ?{sellingPrice:r.sellingPrice,shippingCost:r.shippingCost}
+          :{...existing[bulkChannel],sellingPrice:r.sellingPrice,shippingCost:r.shippingCost,closingFee},
+      };
+    });
+    setChannelProfitData(updated);
+    logActivity?.("Profit calculator bulk-updated",`${count} products, ${bulkChannel.toUpperCase()} channel`);
+    showToast("success",`Saved ${count} products. ✨`);
+  }
+
+  return(
+    <div>
+      <div className="mb-4 p-3 rounded-xl text-xs" style={{backgroundColor:C.bgLight,color:C.lightText}}>
+        Editing one channel at a time — switching tabs below saves nothing automatically, click "Save All" when ready. Packaging Cost applies across all channels for a product, so it stays the same regardless of which channel tab you're editing.
+      </div>
+      <div className="flex items-center justify-between mb-4 flex-wrap gap-2">
+        <div className="flex gap-1.5">
+          {[{id:"fba",label:"Amazon FBA"},{id:"fbm",label:"Amazon FBM"},{id:"website",label:"Website"}].map(t=>(
+            <button key={t.id} onClick={()=>switchChannel(t.id)} className="px-3.5 py-2 rounded-full text-xs font-bold transition-colors" style={{backgroundColor:bulkChannel===t.id?C.zenkyPurple:C.softWhite,color:bulkChannel===t.id?C.softWhite:C.darkText,border:`2px solid ${bulkChannel===t.id?C.zenkyPurple:C.border}`,fontFamily:F.display}}>
+              {t.label}
+            </button>
+          ))}
+        </div>
+        <Input placeholder="Search SKU or combo…" value={query} onChange={e=>setQuery(e.target.value)} className="w-56"/>
+      </div>
+      <Card>
+        <div className="overflow-x-auto"><table className="w-full text-sm">
+          <thead><tr style={{color:C.lightText}}>
+            <th className="py-2 pr-3 text-left text-xs uppercase font-bold">Code</th>
+            <th className="py-2 pr-3 text-left text-xs uppercase font-bold">Name</th>
+            <th className="py-2 pr-3 text-left text-xs uppercase font-bold w-28">Selling Price</th>
+            <th className="py-2 pr-3 text-left text-xs uppercase font-bold w-28">Shipping</th>
+            {bulkChannel!=="website"&&<th className="py-2 pr-3 text-left text-xs uppercase font-bold w-28">Closing Fee</th>}
+            <th className="py-2 pr-3 text-left text-xs uppercase font-bold w-28">Packaging</th>
+            <th className="py-2 pr-3 text-left text-xs uppercase font-bold">Net Profit</th>
+          </tr></thead>
+          <tbody>{filtered.map(p=>{
+            const r=rows[p.code]||{sellingPrice:"",shippingCost:"",closingFee:"",packagingCost:""};
+            const slab=bulkChannel==="fba"?lookupClosingFee(r.sellingPrice):null;
+            const closingFee=bulkChannel==="fba"?(slab?.fee||0):(bulkChannel==="fbm"?Number(r.closingFee)||0:0);
+            const result=bulkChannel==="website"
+              ?calcChannel({sellingPrice:r.sellingPrice,shippingCost:r.shippingCost},p.procurementCost,Number(r.packagingCost)||0,false)
+              :calcChannel({sellingPrice:r.sellingPrice,shippingCost:r.shippingCost,closingFee},p.procurementCost,Number(r.packagingCost)||0,true);
+            return(
+              <tr key={p.code} className="border-t" style={{borderColor:C.border}}>
+                <td className="py-2 pr-3" style={{fontFamily:F.mono,fontWeight:600}}>{p.code}</td>
+                <td className="py-2 pr-3" style={{color:C.lightText}}>{p.name}</td>
+                <td className="py-2 pr-1"><Input type="number" value={r.sellingPrice} onChange={e=>updateRow(p.code,"sellingPrice",e.target.value)}/></td>
+                <td className="py-2 pr-1"><Input type="number" value={r.shippingCost} onChange={e=>updateRow(p.code,"shippingCost",e.target.value)}/></td>
+                {bulkChannel==="fba"&&<td className="py-2 pr-3" style={{fontFamily:F.mono,color:C.lightText}}>{fmtINR(closingFee)}</td>}
+                {bulkChannel==="fbm"&&<td className="py-2 pr-1"><Input type="number" value={r.closingFee} onChange={e=>updateRow(p.code,"closingFee",e.target.value)}/></td>}
+                <td className="py-2 pr-1"><Input type="number" value={r.packagingCost} onChange={e=>updateRow(p.code,"packagingCost",e.target.value)}/></td>
+                <td className="py-2 pr-3 font-bold" style={{fontFamily:F.mono,color:result.netProfit>=0?C.mintGreen:C.zenkyPink}}>{r.sellingPrice?fmtINR(result.netProfit):"—"}</td>
+              </tr>
+            );
+          })}</tbody>
+        </table></div>
+        {filtered.length===0&&<p className="text-sm text-center py-6" style={{color:C.lightText}}>No matches.</p>}
+      </Card>
+      <div className="mt-4"><PrimaryButton onClick={saveAll}><Save size={15}/>Save All</PrimaryButton></div>
     </div>
   );
 }
