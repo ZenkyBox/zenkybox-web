@@ -321,11 +321,13 @@ function SortTH({label,sortKey,activeKey,dir,onClick,className=""}){
    Statement for both the SKU and Combo revenue breakdowns. */
 function PLSortableTable({rows,title}){
   const{sorted,sortKey,sortDir,toggleSort}=useSortableRows(rows,"revenue","desc");
+  const[expandedCode,setExpandedCode]=useState(null);
   return(
     <div className="mb-4">
       <div className="text-xs font-bold uppercase mb-2" style={{color:C.lightText}}>{title}</div>
       <div className="overflow-x-auto"><table className="w-full text-sm">
         <thead><tr>
+          <th className="py-2 pr-1 w-6"></th>
           <SortTH label="Code" sortKey="code" activeKey={sortKey} dir={sortDir} onClick={toggleSort}/>
           <SortTH label="Name" sortKey="name" activeKey={sortKey} dir={sortDir} onClick={toggleSort}/>
           <SortTH label="Qty" sortKey="qty" activeKey={sortKey} dir={sortDir} onClick={toggleSort}/>
@@ -333,16 +335,38 @@ function PLSortableTable({rows,title}){
           <SortTH label="COGS" sortKey="cogs" activeKey={sortKey} dir={sortDir} onClick={toggleSort}/>
           <SortTH label="Gross Profit" sortKey="gp" activeKey={sortKey} dir={sortDir} onClick={toggleSort}/>
         </tr></thead>
-        <tbody>{sorted.map(r=>(
-          <tr key={r.code} className="border-t" style={{borderColor:C.border}}>
-            <td className="py-1.5 pr-3" style={{fontFamily:F.mono,fontWeight:600}}>{r.code}</td>
-            <td className="py-1.5 pr-3">{r.name}</td>
-            <td className="py-1.5 pr-3" style={{fontFamily:F.mono}}>{fmt(r.qty)}</td>
-            <td className="py-1.5 pr-3" style={{fontFamily:F.mono}}>{fmtINR(r.revenue)}</td>
-            <td className="py-1.5 pr-3" style={{fontFamily:F.mono}}>{fmtINR(r.cogs)}</td>
-            <td className="py-1.5 pr-3 font-bold" style={{fontFamily:F.mono,color:C.mintGreen}}>{fmtINR(r.gp)}</td>
-          </tr>
-        ))}</tbody>
+        <tbody>{sorted.map(r=>{
+          const isOpen=expandedCode===r.code;
+          return(
+            <Fragment key={r.code}>
+              <tr className="border-t cursor-pointer" style={{borderColor:C.border}} onClick={()=>setExpandedCode(isOpen?null:r.code)}>
+                <td className="py-1.5 pl-1">{isOpen?<ChevronDown size={14} style={{color:C.zenkyPurple}}/>:<ChevronRight size={14} style={{color:C.lightText}}/>}</td>
+                <td className="py-1.5 pr-3" style={{fontFamily:F.mono,fontWeight:600}}>{r.code}</td>
+                <td className="py-1.5 pr-3">{r.name}</td>
+                <td className="py-1.5 pr-3" style={{fontFamily:F.mono}}>{fmt(r.qty)}</td>
+                <td className="py-1.5 pr-3" style={{fontFamily:F.mono}}>{fmtINR(r.revenue)}</td>
+                <td className="py-1.5 pr-3" style={{fontFamily:F.mono}}>{fmtINR(r.cogs)}</td>
+                <td className="py-1.5 pr-3 font-bold" style={{fontFamily:F.mono,color:C.mintGreen}}>{fmtINR(r.gp)}</td>
+              </tr>
+              {isOpen&&(
+                <tr><td colSpan={7} className="pb-3 pt-1">
+                  <div className="rounded-xl p-3 ml-6" style={{backgroundColor:C.bgLight}}>
+                    <div className="text-xs font-bold uppercase mb-2" style={{color:C.lightText}}>What's inside this COGS figure ({fmt(r.qty)} units)</div>
+                    <div className="grid sm:grid-cols-2 gap-x-6 gap-y-1 text-xs">
+                      <div className="flex justify-between"><span style={{color:C.darkText}}>SKU / Procurement Cost</span><span className="font-bold" style={{fontFamily:F.mono,color:C.zenkyOrange}}>{fmtINR(r.skuCost)}</span></div>
+                      <div className="flex justify-between"><span style={{color:C.darkText}}>Amazon Fees (Referral+Closing+Fulfilment+Storage+Other)</span><span className="font-bold" style={{fontFamily:F.mono,color:C.zenkyOrange}}>{fmtINR(r.amazonFees)}</span></div>
+                      <div className="flex justify-between"><span style={{color:C.darkText}}>GST on Fees (18%)</span><span className="font-bold" style={{fontFamily:F.mono,color:C.zenkyOrange}}>{fmtINR(r.gst)}</span></div>
+                      <div className="flex justify-between"><span style={{color:C.darkText}}>Packaging Cost</span><span className="font-bold" style={{fontFamily:F.mono,color:C.zenkyOrange}}>{fmtINR(r.packaging)}</span></div>
+                      <div className="flex justify-between"><span style={{color:C.darkText}}>Branding Cost</span><span className="font-bold" style={{fontFamily:F.mono,color:C.zenkyOrange}}>{fmtINR(r.branding)}</span></div>
+                      <div className="flex justify-between pt-1" style={{borderTop:`1px solid ${C.border}`}}><span className="font-bold" style={{color:C.darkText}}>Total COGS</span><span className="font-bold" style={{fontFamily:F.mono,color:C.zenkyPurple}}>{fmtINR(r.cogs)}</span></div>
+                    </div>
+                    {r.anyPartial&&<p className="text-xs mt-2" style={{color:C.zenkyPink}}>⚠ Some sales here used a partial estimate (Closing Fee slab only — no Fulfilment/Packaging/Branding data) because this SKU/combo isn't fully configured in Profit Calculator yet. Configure it there for a complete figure.</p>}
+                  </div>
+                </td></tr>
+              )}
+            </Fragment>
+          );
+        })}</tbody>
       </table></div>
     </div>
   );
@@ -3349,17 +3373,30 @@ function FinancialsView({investors,setInvestors,investments,setInvestments,expen
     // Closing Fee slab; plus packaging and branding). Keeps this number
     // consistent with what Sales Report shows for the same sales, rather than
     // two different "cost" figures existing in the app for the same data.
-    function trueLineCost(l){
+    function trueLineBreakdown(l){
       const price=l.qty>0?l.revenue/l.qty:0;
       const tc=trueUnitCost(l.sku,l.unitCost,price,l.channel||"amazon",channelProfitData,financialSettings);
-      return tc.total*l.qty;
+      return{
+        skuCost:l.unitCost*l.qty,
+        amazonFees:tc.amazonFees*l.qty,
+        gst:tc.gst*l.qty,
+        packaging:tc.packagingCost*l.qty,
+        branding:tc.brandingCost*l.qty,
+        total:tc.total*l.qty,
+        method:tc.method,
+      };
     }
+    function trueLineCost(l){return trueLineBreakdown(l).total;}
     function productCombobreakdown(lines){
       const bySku={},byCombo={};
       lines.forEach(l=>{
         const bucket=l.matchType==="combo"?byCombo:bySku;
-        if(!bucket[l.sku])bucket[l.sku]={code:l.sku,name:l.name,qty:0,revenue:0,cogs:0};
-        bucket[l.sku].qty+=l.qty;bucket[l.sku].revenue+=l.revenue;bucket[l.sku].cogs+=trueLineCost(l);
+        if(!bucket[l.sku])bucket[l.sku]={code:l.sku,name:l.name,qty:0,revenue:0,cogs:0,skuCost:0,amazonFees:0,gst:0,packaging:0,branding:0,anyPartial:false};
+        const bd=trueLineBreakdown(l);
+        const row=bucket[l.sku];
+        row.qty+=l.qty;row.revenue+=l.revenue;row.cogs+=bd.total;
+        row.skuCost+=bd.skuCost;row.amazonFees+=bd.amazonFees;row.gst+=bd.gst;row.packaging+=bd.packaging;row.branding+=bd.branding;
+        if(bd.method==="partial")row.anyPartial=true;
       });
       return{skuRows:Object.values(bySku).sort((a,b)=>b.revenue-a.revenue),comboRows:Object.values(byCombo).sort((a,b)=>b.revenue-a.revenue)};
     }
