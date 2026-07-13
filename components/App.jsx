@@ -1,6 +1,8 @@
 import { useState, useEffect, useMemo, useRef, useCallback, Fragment } from "react";
 import Papa from "papaparse";
 import * as XLSX from "xlsx";
+import { jsPDF } from "jspdf";
+import autoTable from "jspdf-autotable";
 import {
   LayoutDashboard, Package, Boxes, Upload, FileText,
   Plus, Trash2, Pencil, Check, X, ChevronDown, ChevronRight,
@@ -71,6 +73,55 @@ function downloadCsv(filename,csv){
   const b=new Blob([csv],{type:"text/csv;charset=utf-8;"});
   const u=URL.createObjectURL(b);const a=document.createElement("a");
   a.href=u;a.download=filename;document.body.appendChild(a);a.click();document.body.removeChild(a);URL.revokeObjectURL(u);
+}
+
+/* ═══ Multi-format report export — CSV / XLSX / PDF from one shared data shape ═══
+   headers: string[]; rows: (string|number)[][]; title: shown on PDF + used as sheet/file name. */
+function exportReportCsv(title,headers,rows){
+  let csv=headers.map(h=>`"${String(h).replace(/"/g,'""')}"`).join(",")+"\n";
+  rows.forEach(r=>{csv+=r.map(v=>`"${String(v??"").replace(/"/g,'""')}"`).join(",")+"\n";});
+  downloadCsv(`${title.replace(/\s+/g,"_")}.csv`,csv);
+}
+function exportReportXlsx(title,headers,rows){
+  const ws=XLSX.utils.aoa_to_sheet([headers,...rows]);
+  const wb=XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb,ws,"Report");
+  XLSX.writeFile(wb,`${title.replace(/\s+/g,"_")}.xlsx`);
+}
+function exportReportPdf(title,headers,rows){
+  const doc=new jsPDF();
+  doc.setFontSize(14);doc.setTextColor(91,45,218);
+  doc.text(title,14,15);
+  doc.setFontSize(8);doc.setTextColor(120,120,120);
+  doc.text(`ZenkyBox · Generated ${new Date().toLocaleDateString("en-IN",{day:"2-digit",month:"short",year:"numeric"})}`,14,21);
+  autoTable(doc,{startY:26,head:[headers],body:rows,styles:{fontSize:8},headStyles:{fillColor:[91,45,218],textColor:255},alternateRowStyles:{fillColor:[247,244,255]}});
+  doc.save(`${title.replace(/\s+/g,"_")}.pdf`);
+}
+/* Small dropdown button offering all three formats — drop into any report's
+   export spot. rows must already be plain strings/numbers (no JSX/objects). */
+function ExportMenu({title,headers,rows,label="Export",onExport}){
+  const [open,setOpen]=useState(false);
+  const ref=useRef(null);
+  useEffect(()=>{
+    function onClick(e){if(ref.current&&!ref.current.contains(e.target))setOpen(false);}
+    document.addEventListener("mousedown",onClick);
+    return()=>document.removeEventListener("mousedown",onClick);
+  },[]);
+  function go(fn,fmt){fn(title,headers,rows);onExport?.(fmt);setOpen(false);}
+  return(
+    <div className="relative inline-block" ref={ref}>
+      <button onClick={()=>setOpen(!open)} className="inline-flex items-center gap-1 text-xs font-bold" style={{color:C.zenkyOrange}}><Download size={13}/>{label}</button>
+      {open&&(
+        <div className="absolute right-0 mt-1 rounded-xl shadow-lg z-20 py-1 min-w-[9rem]" style={{backgroundColor:C.softWhite,border:`2px solid ${C.border}`}}>
+          {[{fmt:"CSV",fn:exportReportCsv},{fmt:"Excel (.xlsx)",fn:exportReportXlsx},{fmt:"PDF",fn:exportReportPdf}].map(o=>(
+            <button key={o.fmt} onClick={()=>go(o.fn,o.fmt)} className="w-full text-left px-3 py-1.5 text-xs font-bold hover:opacity-70" style={{color:C.darkText,fontFamily:F.body}}>
+              {o.fmt}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
 }
 
 /* Auto-generate SKU: ZB-YYYYMM-NNNNN */
@@ -563,17 +614,17 @@ function ComboReadinessView({skus,combos}){
   // Which SKU is highlighted
   const highlightSku=filterSku.trim().toUpperCase();
 
-  function exportReadinessCsv(){
-    let csv="Combo Code,Combo Name,Ready Count,Status,Component SKU,Component Name,Need Qty,Stock,Reorder Level,Component Status\n";
+  const readinessExport=useMemo(()=>{
+    const rows=[];
     enriched.forEach(c=>{
       c.components?.forEach(comp=>{
         const s=skuMap[comp.sku];
         const st=s?stockStatus(s):"missing";
-        csv+=`${c.sku},"${c.name}",${c.ready},${c.ready>0?"Ready":"Short"},${comp.sku},"${s?.name||"Unknown"}",${comp.qty},${s?.stock||0},${s?.reorderLevel||0},${st}\n`;
+        rows.push([c.sku,c.name,c.ready,c.ready>0?"Ready":"Short",comp.sku,s?.name||"Unknown",comp.qty,s?.stock||0,s?.reorderLevel||0,st]);
       });
     });
-    downloadCsv("combo_readiness.csv",csv);
-  }
+    return{headers:["Combo Code","Combo Name","Ready Count","Status","Component SKU","Component Name","Need Qty","Stock","Reorder Level","Component Status"],rows};
+  },[enriched,skuMap]);
 
   if(combos.length===0) return(<div><SectionHeader title="Combo Readiness"/><Empty icon={ShieldCheck} title="No combos yet" message="Create gift combos first to see readiness."/></div>);
 
@@ -582,7 +633,7 @@ function ComboReadinessView({skus,combos}){
       <SectionHeader
         title="Combo Readiness"
         subtitle="Per-combo breakdown showing which SKUs are short and by how much."
-        action={<PrimaryButton onClick={exportReadinessCsv}><Download size={15}/>Export CSV</PrimaryButton>}
+        action={<ExportMenu title="Combo_Readiness" {...readinessExport} label="Export"/>}
       />
 
       {/* Filter bar */}
@@ -713,18 +764,17 @@ function Catalog({skus,setSkus,showToast,role,logActivity}){
     logActivity?.("SKU edited",code);
   }
 
-  function exportCatalogCsv(){
-    let csv="SKU,Name,Stock,Reorder Level,Procurement Cost (INR),Status\n";
-    skus.forEach(s=>{csv+=`${s.sku},"${s.name}",${s.stock},${s.reorderLevel},${s.procurementCost||0},${stockStatus(s)}\n`;});
-    downloadCsv("sku_catalog.csv",csv);
-  }
+  const catalogExport={
+    headers:["SKU","Name","Stock","Reorder Level","Procurement Cost (INR)","Status"],
+    rows:skus.map(s=>[s.sku,s.name,s.stock,s.reorderLevel,s.procurementCost||0,stockStatus(s)]),
+  };
 
   return(
     <div>
       <SectionHeader title="SKU Catalog" subtitle="Manage products, stock, reorder levels, and procurement costs."
         action={
           <div className="flex items-center gap-2">
-            <PrimaryButton onClick={exportCatalogCsv}><Download size={15}/>Export</PrimaryButton>
+            <ExportMenu title="SKU_Catalog" {...catalogExport} label="Export"/>
             {role==="admin"&&skus.length>0&&(
               <button onClick={()=>setShowClearBox(!showClearBox)} className="inline-flex items-center gap-1.5 px-3 py-2 rounded-full text-xs font-bold border-2 transition-colors" style={{borderColor:"#fecaca",color:"#dc2626",fontFamily:F.display}}>
                 <Trash2 size={13}/>Clear All
@@ -844,18 +894,18 @@ function CombosView({skus,combos,setCombos,showToast,role,logActivity}){
     setForm(blank);setEditId(null);
   }
 
-  function exportCombosCsv(){
-    let csv="Combo Code,Combo Name,Component SKU,Component Name,Qty\n";
-    combos.forEach(c=>{c.components?.forEach(comp=>{csv+=`${c.sku},"${c.name}",${comp.sku},"${skuMap[comp.sku]?.name||""}",${comp.qty}\n`;});});
-    downloadCsv("combos.csv",csv);
-  }
+  const combosExport=useMemo(()=>{
+    const rows=[];
+    combos.forEach(c=>{c.components?.forEach(comp=>{rows.push([c.sku,c.name,comp.sku,skuMap[comp.sku]?.name||"",comp.qty]);});});
+    return{headers:["Combo Code","Combo Name","Component SKU","Component Name","Qty"],rows};
+  },[combos,skuMap]);
 
   return(
     <div>
       <SectionHeader title="Gift Combos" subtitle="Define gift bundles from your SKUs."
         action={(
           <div className="flex items-center gap-2">
-            {combos.length>0&&<PrimaryButton onClick={exportCombosCsv}><Download size={15}/>Export</PrimaryButton>}
+            {combos.length>0&&<ExportMenu title="Gift_Combos" {...combosExport} label="Export"/>}
             {role==="admin"&&combos.length>0&&(
               <button onClick={()=>setShowClearBox(!showClearBox)} className="inline-flex items-center gap-1.5 px-3 py-2 rounded-full text-xs font-bold border-2 transition-colors" style={{borderColor:"#fecaca",color:"#dc2626",fontFamily:F.display}}>
                 <Trash2 size={13}/>Clear All
@@ -1615,7 +1665,7 @@ const AMAZON_FEE_FIELDS=[
   {key:"feeDiscounts",label:"Fee Discounts"},
 ];
 const BLANK_CHANNEL={
-  weight:"",category:"",packagingCost:"",
+  weight:"",category:"",packagingCost:"",brandingCost:"",
   fba:{sellingPrice:"",referralFee:"",closingFee:"",variableClosingFee:"",fulfilmentCost:"",storageCost:"",otherFees:"",feeDiscounts:""},
   fbm:{sellingPrice:"",referralFee:"",closingFee:"",variableClosingFee:"",fulfilmentCost:"",storageCost:"",otherFees:"",feeDiscounts:""},
   website:{sellingPrice:"",shippingCost:"",packagingCost:""},
@@ -1623,22 +1673,64 @@ const BLANK_CHANNEL={
 
 /* Amazon math: Net Proceeds = Selling Price − (Referral+Closing+VariableClosing+Fulfilment+Storage+Other−FeeDiscounts) − 18% GST on those fees.
    Matches Amazon's own Revenue Calculator exactly — we don't recompute their fees, we just total what you paste in from there. */
-function calcAmazonChannel(ch,cogs,packagingCost){
+function calcAmazonChannel(ch,cogs,packagingCost,brandingCost=0){
   const n=v=>Number(v)||0;
   const feesTotal=n(ch.referralFee)+n(ch.closingFee)+n(ch.variableClosingFee)+n(ch.fulfilmentCost)+n(ch.storageCost)+n(ch.otherFees)-n(ch.feeDiscounts);
   const gst=feesTotal*0.18;
   const netProceeds=n(ch.sellingPrice)-feesTotal-gst;
-  const netProfit=netProceeds-cogs-packagingCost;
+  const netProfit=netProceeds-cogs-packagingCost-n(brandingCost);
   const margin=n(ch.sellingPrice)>0?(netProfit/n(ch.sellingPrice))*100:0;
   return{feesTotal,gst,netProceeds,netProfit,margin};
 }
-function calcWebsiteChannel(ch,cogs,gatewayPercent,gatewayFixed){
+function calcWebsiteChannel(ch,cogs,gatewayPercent,gatewayFixed,brandingCost=0){
   const n=v=>Number(v)||0;
   const gatewayFee=n(ch.sellingPrice)*(n(gatewayPercent)/100)+n(gatewayFixed);
   const netProceeds=n(ch.sellingPrice)-gatewayFee-n(ch.shippingCost);
-  const netProfit=netProceeds-cogs-n(ch.packagingCost);
+  const netProfit=netProceeds-cogs-n(ch.packagingCost)-n(brandingCost);
   const margin=n(ch.sellingPrice)>0?(netProfit/n(ch.sellingPrice))*100:0;
   return{gatewayFee,netProceeds,netProfit,margin};
+}
+
+/* Shared "true cost per unit" calculator — this is what the ZenkyBox Sales
+   Report uses to show real Earning, not just Revenue minus SKU cost.
+   If the SKU/combo has been configured in Profit Calculator (real Amazon fees
+   pasted in from Seller Central), that configuration is used — the exact same
+   numbers verified there. If not configured, falls back to a partial estimate
+   using the verified Closing Fee slab + 18% tax, with Fulfilment/Packaging/
+   Branding at ₹0 since they're genuinely unknown — clearly flagged as partial
+   so it's never mistaken for a complete number. */
+function trueUnitCost(sku,unitCost,sellingPrice,channel,channelProfitData,financialSettings){
+  const cfg=channelProfitData?.[sku];
+  const packagingCost=Number(cfg?.packagingCost)||Number(financialSettings?.defaultPackagingCost)||0;
+  const brandingCost=Number(cfg?.brandingCost)||0;
+
+  if(channel==="website"){
+    // Website packaging/shipping are already folded into unitCost's caller
+    // (salesLine.cost) at upload time since v7.1 — this function only adds
+    // branding on top, since that wasn't part of that earlier fix.
+    return{total:unitCost+brandingCost,amazonFees:0,gst:0,packagingCost:0,brandingCost,method:"full"};
+  }
+
+  // Amazon channel
+  const fba=cfg?.fba,fbm=cfg?.fbm;
+  const fbaHasData=fba&&Object.values(fba).some(v=>v!=="");
+  const fbmHasData=fbm&&Object.values(fbm).some(v=>v!=="");
+  const configured=fbaHasData?fba:(fbmHasData?fbm:null);
+  const isFba=fbaHasData;
+  if(configured){
+    const n=v=>Number(v)||0;
+    // FBA's closing fee always comes from the verified slab, never the saved
+    // manual value — keeps this one figure consistent everywhere in the app,
+    // per the platform-wide slab policy, even if saved config predates it.
+    const closingFee=isFba?(lookupClosingFee(configured.sellingPrice||sellingPrice)?.fee||0):n(configured.closingFee);
+    const feesTotal=n(configured.referralFee)+closingFee+n(configured.variableClosingFee)+n(configured.fulfilmentCost)+n(configured.storageCost)+n(configured.otherFees)-n(configured.feeDiscounts);
+    const gst=feesTotal*0.18;
+    return{total:unitCost+feesTotal+gst+packagingCost+brandingCost,amazonFees:feesTotal,gst,packagingCost,brandingCost,method:"full"};
+  }
+  // Partial fallback — verified closing fee slab only, everything else unknown
+  const slab=lookupClosingFee(sellingPrice);
+  const closingFee=slab?.fee||0,tax=slab?.tax||0;
+  return{total:unitCost+closingFee+tax+packagingCost,amazonFees:closingFee,gst:tax,packagingCost,brandingCost:0,method:"partial"};
 }
 
 /* Verified directly against a real Amazon Net Proceeds Report from this
@@ -1710,16 +1802,25 @@ function ProfitCalculatorView({skus,combos,channelProfitData,setChannelProfitDat
   }
 
   function save(){
-    setChannelProfitData({...channelProfitData,[selectedCode]:form});
+    // Save with FBA's closing fee forced to the current verified slab value —
+    // matches what's actually shown/used, not whatever stale value might be
+    // sitting in form state from before the selling price last changed.
+    const toSave={...form,fba:{...form.fba,closingFee:fbaSlab?fbaSlab.fee:0}};
+    setChannelProfitData({...channelProfitData,[selectedCode]:toSave});
     logActivity?.("Profit calculator updated",selectedCode);
     showToast("success","Saved. ✨");
   }
 
   const selected=allProducts.find(p=>p.code===selectedCode);
   const cogs=selected?.procurementCost||0;
-  const fbaResult=calcAmazonChannel(form.fba,cogs,Number(form.packagingCost)||0);
-  const fbmResult=calcAmazonChannel(form.fbm,cogs,Number(form.packagingCost)||0);
-  const websiteResult=calcWebsiteChannel(form.website,cogs,financialSettings.gatewayFeePercent,financialSettings.gatewayFeeFixed);
+  // FBA closing fee is ALWAYS the verified slab value, never manually entered
+  // — per the design decision to keep this one figure consistent platform-wide
+  // rather than relying on it being pasted/updated correctly every time.
+  const fbaSlab=lookupClosingFee(form.fba.sellingPrice);
+  const fbaWithSlabFee={...form.fba,closingFee:fbaSlab?fbaSlab.fee:0};
+  const fbaResult=calcAmazonChannel(fbaWithSlabFee,cogs,Number(form.packagingCost)||0,form.brandingCost);
+  const fbmResult=calcAmazonChannel(form.fbm,cogs,Number(form.packagingCost)||0,form.brandingCost);
+  const websiteResult=calcWebsiteChannel(form.website,cogs,financialSettings.gatewayFeePercent,financialSettings.gatewayFeeFixed,form.brandingCost);
 
   return(
     <div>
@@ -1758,10 +1859,11 @@ function ProfitCalculatorView({skus,combos,channelProfitData,setChannelProfitDat
                   </div>
                   <PrimaryButton onClick={save}><Save size={15}/>Save</PrimaryButton>
                 </div>
-                <div className="grid sm:grid-cols-3 gap-2">
+                <div className="grid sm:grid-cols-4 gap-2">
                   <Input placeholder="Weight (grams)" type="number" value={form.weight} onChange={e=>setForm({...form,weight:e.target.value})}/>
                   <Input placeholder="Amazon Category" value={form.category} onChange={e=>setForm({...form,category:e.target.value})}/>
                   <div className="relative"><span className="absolute left-3 top-2.5 text-sm" style={{color:C.lightText}}>₹</span><Input placeholder="Packaging Cost" type="number" className="pl-6" value={form.packagingCost} onChange={e=>setForm({...form,packagingCost:e.target.value})}/></div>
+                  <div className="relative"><span className="absolute left-3 top-2.5 text-sm" style={{color:C.lightText}}>₹</span><Input placeholder="Branding Cost" type="number" className="pl-6" value={form.brandingCost} onChange={e=>setForm({...form,brandingCost:e.target.value})}/></div>
                 </div>
               </Card>
 
@@ -1779,20 +1881,33 @@ function ProfitCalculatorView({skus,combos,channelProfitData,setChannelProfitDat
                   <Card>
                     <div className="grid sm:grid-cols-2 gap-3 mb-4">
                       <div className="relative"><label className="text-xs font-bold uppercase block mb-1" style={{color:C.lightText}}>Item Price (Selling Price)</label><span className="absolute left-3 top-8 text-sm" style={{color:C.lightText}}>₹</span><Input type="number" className="pl-6" value={form[key].sellingPrice} onChange={e=>setForm({...form,[key]:{...form[key],sellingPrice:e.target.value}})}/></div>
-                      <div className="flex items-end">
-                        <button onClick={()=>{
-                          const slab=lookupClosingFee(form[key].sellingPrice);
-                          if(!slab){showToast("error","No verified slab for this price — check Amazon's Revenue Calculator directly.");return;}
-                          setForm({...form,[key]:{...form[key],closingFee:slab.fee}});
-                          showToast("success",`Filled Closing Fee: ${fmtINR(slab.fee)} (${slab.label} slab). GST is added automatically.`);
-                        }} className="px-3 py-2.5 rounded-xl text-xs font-bold border-2" style={{borderColor:C.zenkyPurple,color:C.zenkyPurple,fontFamily:F.display}}>
-                          Auto-fill Closing Fee from slab
-                        </button>
-                      </div>
+                      {key==="fbm"&&(
+                        <div className="flex items-end">
+                          <button onClick={()=>{
+                            const slab=lookupClosingFee(form[key].sellingPrice);
+                            if(!slab){showToast("error","No verified slab for this price — check Amazon's Revenue Calculator directly.");return;}
+                            setForm({...form,[key]:{...form[key],closingFee:slab.fee}});
+                            showToast("success",`Filled Closing Fee: ${fmtINR(slab.fee)} (${slab.label} slab). GST is added automatically.`);
+                          }} className="px-3 py-2.5 rounded-xl text-xs font-bold border-2" style={{borderColor:C.zenkyPurple,color:C.zenkyPurple,fontFamily:F.display}}>
+                            Auto-fill Closing Fee from slab
+                          </button>
+                        </div>
+                      )}
                     </div>
-                    <div className="text-xs font-bold uppercase mb-2" style={{color:C.lightText}}>Paste from Amazon's Revenue Calculator</div>
+                    <div className="text-xs font-bold uppercase mb-2" style={{color:C.lightText}}>{key==="fba"?"Paste the rest from Amazon's Revenue Calculator":"Paste from Amazon's Revenue Calculator"}</div>
                     <div className="grid sm:grid-cols-2 gap-3 mb-4">
-                      {AMAZON_FEE_FIELDS.map(f=>(
+                      {key==="fba"&&(()=>{
+                        const slab=lookupClosingFee(form.fba.sellingPrice);
+                        return(
+                          <div className="relative">
+                            <label className="text-xs block mb-1" style={{color:C.lightText}}>Closing Fee <span style={{color:C.zenkyPurple,fontWeight:700}}>(auto, verified slab)</span></label>
+                            <span className="absolute left-3 top-8 text-sm" style={{color:C.lightText}}>₹</span>
+                            <Input type="number" className="pl-6" value={slab?slab.fee:0} disabled style={{backgroundColor:C.bgLight,color:C.lightText}}/>
+                            {!slab&&<p className="text-xs mt-1" style={{color:C.zenkyPink}}>No verified slab for this price — defaulting to ₹0, check Amazon's Revenue Calculator and log as a new slab if needed.</p>}
+                          </div>
+                        );
+                      })()}
+                      {AMAZON_FEE_FIELDS.filter(f=>!(key==="fba"&&f.key==="closingFee")).map(f=>(
                         <div key={f.key} className="relative"><label className="text-xs block mb-1" style={{color:C.lightText}}>{f.label}</label><span className="absolute left-3 top-8 text-sm" style={{color:C.lightText}}>₹</span><Input type="number" className="pl-6" value={form[key][f.key]} onChange={e=>setForm({...form,[key]:{...form[key],[f.key]:e.target.value}})}/></div>
                       ))}
                     </div>
@@ -1802,6 +1917,7 @@ function ProfitCalculatorView({skus,combos,channelProfitData,setChannelProfitDat
                       <div className="flex justify-between text-sm"><span style={{color:C.lightText}}>Net Proceeds</span><span className="font-bold" style={{fontFamily:F.mono,color:C.zenkyPurple}}>{fmtINR(result.netProceeds)}</span></div>
                       <div className="flex justify-between text-sm"><span style={{color:C.lightText}}>− COGS</span><span className="font-bold" style={{fontFamily:F.mono,color:C.zenkyOrange}}>{fmtINR(cogs)}</span></div>
                       <div className="flex justify-between text-sm"><span style={{color:C.lightText}}>− Packaging Cost</span><span className="font-bold" style={{fontFamily:F.mono,color:C.zenkyOrange}}>{fmtINR(Number(form.packagingCost)||0)}</span></div>
+                      <div className="flex justify-between text-sm"><span style={{color:C.lightText}}>− Branding Cost</span><span className="font-bold" style={{fontFamily:F.mono,color:C.zenkyOrange}}>{fmtINR(Number(form.brandingCost)||0)}</span></div>
                       <div className="flex justify-between pt-2" style={{borderTop:`2px solid ${C.border}`}}>
                         <span className="font-bold" style={{fontFamily:F.display,color:C.darkText}}>Net Profit</span>
                         <span className="font-black text-lg" style={{fontFamily:F.mono,color:result.netProfit>=0?C.mintGreen:C.zenkyPink}}>{fmtINR(result.netProfit)}</span>
@@ -1829,6 +1945,7 @@ function ProfitCalculatorView({skus,combos,channelProfitData,setChannelProfitDat
                     <div className="flex justify-between text-sm"><span style={{color:C.lightText}}>Net Proceeds</span><span className="font-bold" style={{fontFamily:F.mono,color:C.zenkyPurple}}>{fmtINR(websiteResult.netProceeds)}</span></div>
                     <div className="flex justify-between text-sm"><span style={{color:C.lightText}}>− COGS</span><span className="font-bold" style={{fontFamily:F.mono,color:C.zenkyOrange}}>{fmtINR(cogs)}</span></div>
                     <div className="flex justify-between text-sm"><span style={{color:C.lightText}}>− Packaging Cost</span><span className="font-bold" style={{fontFamily:F.mono,color:C.zenkyOrange}}>{fmtINR(Number(form.website.packagingCost)||0)}</span></div>
+                    <div className="flex justify-between text-sm"><span style={{color:C.lightText}}>− Branding Cost</span><span className="font-bold" style={{fontFamily:F.mono,color:C.zenkyOrange}}>{fmtINR(Number(form.brandingCost)||0)}</span></div>
                     <div className="flex justify-between pt-2" style={{borderTop:`2px solid ${C.border}`}}>
                       <span className="font-bold" style={{fontFamily:F.display,color:C.darkText}}>Net Profit</span>
                       <span className="font-black text-lg" style={{fontFamily:F.mono,color:websiteResult.netProfit>=0?C.mintGreen:C.zenkyPink}}>{fmtINR(websiteResult.netProfit)}</span>
@@ -1855,7 +1972,7 @@ function ProfitCalculatorView({skus,combos,channelProfitData,setChannelProfitDat
 }
 
 /* ═══ ZENKYBOX SALES REPORT ═══ */
-function SalesReportsView({salesLines,skus,combos}){
+function SalesReportsView({salesLines,skus,combos,channelProfitData,financialSettings}){
   const [tab,setTab]=useState("overall");
   const [channelFilter,setChannelFilter]=useState("all"); // "all" | "amazon" | "website"
   const skuMap=useMemo(()=>Object.fromEntries(skus.map(s=>[s.sku,s])),[skus]);
@@ -1864,10 +1981,25 @@ function SalesReportsView({salesLines,skus,combos}){
   // Apply the channel filter before anything else touches sales data — every
   // tab below (including Overall/MoM/Weekly/Buyer/Location) automatically
   // respects whichever channel is selected.
-  const filteredLines=useMemo(()=>{
+  const channelFilteredLines=useMemo(()=>{
     if(channelFilter==="all")return salesLines;
     return salesLines.filter(l=>(l.channel||"amazon")===channelFilter);
   },[salesLines,channelFilter]);
+
+  // Recompute true Cost/Earning per line using the same fee data as Profit
+  // Calculator — SKU cost alone was understating true cost (no Amazon fees,
+  // no branding). If a SKU/combo has been configured in Profit Calculator,
+  // its real entered fees are used (method:"full"); otherwise this falls back
+  // to the verified Closing Fee slab only, flagged as "partial" so an
+  // incomplete estimate is never mistaken for a complete one.
+  const filteredLines=useMemo(()=>channelFilteredLines.map(l=>{
+    const price=l.qty>0?l.revenue/l.qty:0;
+    const tc=trueUnitCost(l.sku,l.unitCost,price,l.channel||"amazon",channelProfitData,financialSettings);
+    const cost=tc.total*l.qty;
+    return{...l,cost,earning:l.revenue-cost,costMethod:tc.method};
+  }),[channelFilteredLines,channelProfitData,financialSettings]);
+
+  const anyPartial=useMemo(()=>filteredLines.some(l=>l.costMethod==="partial"),[filteredLines]);
 
   const TABS=[
     {id:"overall",label:"Overall"},
@@ -1891,12 +2023,15 @@ function SalesReportsView({salesLines,skus,combos}){
     return{skuRows:Object.values(bySku).sort((a,b)=>b.revenue-a.revenue),comboRows:Object.values(byCombo).sort((a,b)=>b.revenue-a.revenue)};
   }
 
-  function exportBreakdown(title,skuRows,comboRows){
-    let csv=`${title}\n\nSKU DETAILS\nSKU,Name,Qty Sold,Cost,Revenue,Earning\n`;
-    skuRows.forEach(r=>csv+=`${r.code},"${r.name}",${r.qty},${r.cost.toFixed(2)},${r.revenue.toFixed(2)},${r.earning.toFixed(2)}\n`);
-    csv+=`\nCOMBO DETAILS\nCombo Code,Name,Qty Sold,Cost,Revenue,Earning\n`;
-    comboRows.forEach(r=>csv+=`${r.code},"${r.name}",${r.qty},${r.cost.toFixed(2)},${r.revenue.toFixed(2)},${r.earning.toFixed(2)}\n`);
-    downloadCsv(`${title.replace(/\s+/g,"_")}.csv`,csv);
+  // Flattened into one table (Section column distinguishes SKU vs Combo rows)
+  // so it exports cleanly across CSV/XLSX/PDF from a single shared shape.
+  function breakdownExportRows(skuRows,comboRows){
+    const headers=["Section","Code","Name","Qty Sold","Cost","Revenue","Earning"];
+    const rows=[
+      ...skuRows.map(r=>["SKU",r.code,r.name,r.qty,r.cost.toFixed(2),r.revenue.toFixed(2),r.earning.toFixed(2)]),
+      ...comboRows.map(r=>["Combo",r.code,r.name,r.qty,r.cost.toFixed(2),r.revenue.toFixed(2),r.earning.toFixed(2)]),
+    ];
+    return{headers,rows};
   }
 
   function BreakdownTable({rows,label}){
@@ -1946,7 +2081,7 @@ function SalesReportsView({salesLines,skus,combos}){
                   <div><div className="text-xs" style={{color:C.lightText}}>Revenue</div><div className="font-bold" style={{fontFamily:F.mono,color:C.zenkyPurple}}>{fmtINR(g.revenue)}</div></div>
                   <div><div className="text-xs" style={{color:C.lightText}}>Cost</div><div className="font-bold" style={{fontFamily:F.mono,color:C.zenkyOrange}}>{fmtINR(g.cost)}</div></div>
                   <div><div className="text-xs" style={{color:C.lightText}}>Earning</div><div className="font-bold" style={{fontFamily:F.mono,color:g.earning>=0?C.mintGreen:C.zenkyPink}}>{fmtINR(g.earning)}</div></div>
-                  <button onClick={()=>exportBreakdown(g.key,skuRows,comboRows)} className="inline-flex items-center gap-1 text-xs font-bold" style={{color:C.zenkyOrange}}><Download size={13}/>Export</button>
+                  <ExportMenu title={g.key} {...breakdownExportRows(skuRows,comboRows)}/>
                 </div>
               </div>
               <BreakdownTable rows={skuRows} label="SKU Details"/>
@@ -2005,7 +2140,7 @@ function SalesReportsView({salesLines,skus,combos}){
           <Card>
             <div className="flex items-center justify-between mb-4 flex-wrap gap-2">
               <h3 className="font-bold text-lg" style={{fontFamily:F.display,color:C.darkText}}>All-Time Overall Report</h3>
-              <button onClick={()=>exportBreakdown("Overall_Sales_Report",overallBreakdown.skuRows,overallBreakdown.comboRows)} className="inline-flex items-center gap-1 text-xs font-bold" style={{color:C.zenkyOrange}}><Download size={13}/>Export</button>
+              <ExportMenu title="Overall_Sales_Report" {...breakdownExportRows(overallBreakdown.skuRows,overallBreakdown.comboRows)}/>
             </div>
             <BreakdownTable rows={overallBreakdown.skuRows} label="SKU Details"/>
             <BreakdownTable rows={overallBreakdown.comboRows} label="Combo Details"/>
@@ -2057,11 +2192,10 @@ function SourceDataView({activityLog,synced,salesLines,setSalesLines,reports,set
   const lastBackup=typeof window!=="undefined"?localStorage.getItem("zenkybox-last-backup"):null;
   const daysSinceBackup=lastBackup?Math.floor((Date.now()-new Date(lastBackup).getTime())/86400000):null;
 
-  function exportLog(){
-    let csv="Date,Action,Detail,User,Role\n";
-    activityLog.forEach(a=>csv+=`${a.date},"${a.action}","${a.detail||""}",${a.user||""},${a.role}\n`);
-    downloadCsv("zenkybox_activity_log.csv",csv);
-  }
+  const activityLogExport={
+    headers:["Date","Action","Detail","User","Role"],
+    rows:activityLog.map(a=>[a.date,a.action,a.detail||"",a.user||"",a.role]),
+  };
   // Group log entries by day for a clean "day-wise" table
   const byDay=useMemo(()=>{
     const groups={};
@@ -2208,7 +2342,7 @@ function SourceDataView({activityLog,synced,salesLines,setSalesLines,reports,set
       <Card>
         <div className="flex items-center justify-between mb-4 flex-wrap gap-2">
           <h3 className="font-bold text-lg" style={{fontFamily:F.display,color:C.darkText}}>Day-wise Update Record</h3>
-          {activityLog.length>0&&<button onClick={exportLog} className="inline-flex items-center gap-1 text-xs font-bold" style={{color:C.zenkyOrange}}><Download size={13}/>Export</button>}
+          {activityLog.length>0&&<ExportMenu title="ZenkyBox_Activity_Log" {...activityLogExport}/>}
         </div>
         {activityLog.length===0?<Empty icon={Calendar} title="No activity yet" message="Every SKU/combo change, import, and sales upload will be logged here."/>:(
           <div className="space-y-5">
@@ -2444,7 +2578,7 @@ function ChannelCostSettingsCard({financialSettings,setFinancialSettings,logActi
 }
 
 
-function FinancialsView({investors,setInvestors,investments,setInvestments,expenses,setExpenses,income,setIncome,salesLines,skus,combos,reports,activityLog,adminPin,loginCreds,financialSettings,setFinancialSettings,forceSaveNow,logActivity,showToast}){
+function FinancialsView({investors,setInvestors,investments,setInvestments,expenses,setExpenses,income,setIncome,salesLines,skus,combos,reports,activityLog,adminPin,loginCreds,financialSettings,setFinancialSettings,channelProfitData,forceSaveNow,logActivity,showToast}){
 
   const [tab,setTab]=useState("overview");
   const [viewingInvestorId,setViewingInvestorId]=useState(null); // set to show the dedicated Investor Statement page instead of normal tab content
@@ -2482,12 +2616,6 @@ function FinancialsView({investors,setInvestors,investments,setInvestments,expen
   const totalIncome=useMemo(()=>income.reduce((s,i)=>s+Number(i.amount||0),0),[income]);
   const totalExpenses=useMemo(()=>expenses.reduce((s,e)=>s+Number(e.amount||0),0),[expenses]);
   const fundBalance=totalInvested+totalIncome-totalExpenses;
-
-  function exportCsv(rows,headers,filename){
-    let csv=headers.join(",")+"\n";
-    rows.forEach(r=>csv+=headers.map(h=>{const v=r[h];return typeof v==="string"&&v.includes(",")?`"${v}"`:v;}).join(",")+"\n");
-    downloadCsv(filename,csv);
-  }
 
   /* ── Overview ── */
   function Overview(){
@@ -2960,7 +3088,7 @@ function FinancialsView({investors,setInvestors,investments,setInvestments,expen
         <Card>
           <div className="flex items-center justify-between mb-4">
             <h3 className="font-bold text-lg" style={{fontFamily:F.display,color:C.darkText}}>{expenses.length} Expense{expenses.length!==1?"s":""}</h3>
-            {expenses.length>0&&<button onClick={()=>exportCsv(expenses,["date","head","amount","spentByName","paidTo","paymentMode","comment"],"expenses.csv")} className="inline-flex items-center gap-1 text-xs font-bold" style={{color:C.zenkyOrange}}><Download size={13}/>Export</button>}
+            {expenses.length>0&&<ExportMenu title="Expenses" headers={["Date","Head","Amount","Spent By","Fund Source","Paid To","Payment Mode","Comment"]} rows={expenses.map(e=>[e.date,e.head,e.amount,e.spentByName||"",e.fundedByName||"",e.paidTo||"",e.paymentMode||"",e.comment||""])}/>}
           </div>
           {expenses.length===0?<Empty icon={IndianRupee} title="No expenses logged" message="Add your first expense above."/>:(
             <div className="overflow-x-auto"><table className="w-full text-sm">
@@ -3171,7 +3299,7 @@ function FinancialsView({investors,setInvestors,investments,setInvestments,expen
         <Card>
           <div className="flex items-center justify-between mb-4">
             <h3 className="font-bold text-lg" style={{fontFamily:F.display,color:C.darkText}}>{income.length} Income Entr{income.length!==1?"ies":"y"}</h3>
-            {income.length>0&&<button onClick={()=>exportCsv(income,["date","head","amount","receivedFrom","paymentMode","comment"],"income.csv")} className="inline-flex items-center gap-1 text-xs font-bold" style={{color:C.zenkyOrange}}><Download size={13}/>Export</button>}
+            {income.length>0&&<ExportMenu title="Income" headers={["Date","Head","Amount","Received From","Payment Mode","Comment"]} rows={income.map(i=>[i.date,i.head,i.amount,i.receivedFrom||"",i.paymentMode||"",i.comment||""])}/>}
           </div>
           {income.length===0?<Empty icon={IndianRupee} title="No income logged" message="Add your first income entry above."/>:(
             <div className="overflow-x-auto"><table className="w-full text-sm">
@@ -3215,12 +3343,23 @@ function FinancialsView({investors,setInvestors,investments,setInvestments,expen
     ];
 
     // ── Shared: product/combo revenue+COGS, sourced from Sales Report data (salesLines) ──
+    // COGS here uses the same auto-calculation as ZenkyBox Sales Report — not
+    // just SKU procurement cost, but the fuller true cost (Amazon fees where
+    // a SKU/combo is configured in Profit Calculator, else the verified
+    // Closing Fee slab; plus packaging and branding). Keeps this number
+    // consistent with what Sales Report shows for the same sales, rather than
+    // two different "cost" figures existing in the app for the same data.
+    function trueLineCost(l){
+      const price=l.qty>0?l.revenue/l.qty:0;
+      const tc=trueUnitCost(l.sku,l.unitCost,price,l.channel||"amazon",channelProfitData,financialSettings);
+      return tc.total*l.qty;
+    }
     function productCombobreakdown(lines){
       const bySku={},byCombo={};
       lines.forEach(l=>{
         const bucket=l.matchType==="combo"?byCombo:bySku;
         if(!bucket[l.sku])bucket[l.sku]={code:l.sku,name:l.name,qty:0,revenue:0,cogs:0};
-        bucket[l.sku].qty+=l.qty;bucket[l.sku].revenue+=l.revenue;bucket[l.sku].cogs+=l.cost;
+        bucket[l.sku].qty+=l.qty;bucket[l.sku].revenue+=l.revenue;bucket[l.sku].cogs+=trueLineCost(l);
       });
       return{skuRows:Object.values(bySku).sort((a,b)=>b.revenue-a.revenue),comboRows:Object.values(byCombo).sort((a,b)=>b.revenue-a.revenue)};
     }
@@ -3244,7 +3383,7 @@ function FinancialsView({investors,setInvestors,investments,setInvestments,expen
     function plFor(lines,expenseList,incomeList){
       const{skuRows,comboRows}=productCombobreakdown(lines);
       const totalRevenue=lines.reduce((s,l)=>s+l.revenue,0);
-      const totalCOGS=lines.reduce((s,l)=>s+l.cost,0);
+      const totalCOGS=lines.reduce((s,l)=>s+trueLineCost(l),0);
       const grossProfit=totalRevenue-totalCOGS;
       const opExByHead={};let totalOpEx=0;
       const excludedTotals={procurementTotal:0,packagingTotal:0,shippingTotal:0};
@@ -3266,24 +3405,22 @@ function FinancialsView({investors,setInvestors,investments,setInvestments,expen
 
     const overallPL=useMemo(()=>plFor(salesLines,expenses,income),[]);
 
-    function exportPL(pl,label){
-      let csv=`Profit & Loss Statement — ${label}\n\n`;
-      csv+="REVENUE BY PRODUCT (SKU)\nCode,Name,Qty,Revenue,COGS,Gross Profit\n";
-      pl.skuRows.forEach(r=>csv+=`${r.code},"${r.name}",${r.qty},${r.revenue.toFixed(2)},${r.cogs.toFixed(2)},${(r.revenue-r.cogs).toFixed(2)}\n`);
-      csv+="\nREVENUE BY COMBO\nCode,Name,Qty,Revenue,COGS,Gross Profit\n";
-      pl.comboRows.forEach(r=>csv+=`${r.code},"${r.name}",${r.qty},${r.revenue.toFixed(2)},${r.cogs.toFixed(2)},${(r.revenue-r.cogs).toFixed(2)}\n`);
-      csv+=`\nTOTAL REVENUE,${pl.totalRevenue.toFixed(2)}\nTOTAL COGS,${pl.totalCOGS.toFixed(2)}\nGROSS PROFIT,${pl.grossProfit.toFixed(2)}\n`;
-      csv+="\nOPERATING EXPENSES\nHead,Amount\n";
-      Object.entries(pl.opExByHead).forEach(([h,a])=>csv+=`"${h}",${a.toFixed(2)}\n`);
-      csv+=`TOTAL OPERATING EXPENSES,${pl.totalOpEx.toFixed(2)}\n`;
-      csv+=`\nInventory Purchases (Product Procurement — cash outflow, excluded from Net Profit as it's already counted via COGS),${pl.procurementTotal.toFixed(2)}\n`;
-      csv+=`Packaging (lump-sum purchases — excluded from Net Profit as it's already counted per unit sold),${pl.packagingTotal.toFixed(2)}\n`;
-      csv+=`Shipping & Courier (lump-sum — excluded from Net Profit as it's already counted per unit sold),${pl.shippingTotal.toFixed(2)}\n`;
-      csv+="\nOTHER INCOME (excludes Amazon/Website — already in Revenue)\nHead,Amount\n";
-      Object.entries(pl.otherIncomeByHead).forEach(([h,a])=>csv+=`"${h}",${a.toFixed(2)}\n`);
-      csv+=`TOTAL OTHER INCOME,${pl.totalOtherIncome.toFixed(2)}\n`;
-      csv+=`\nNET PROFIT / LOSS,${pl.netProfit.toFixed(2)}\n`;
-      downloadCsv(`PL_Statement_${label.replace(/\s+/g,"_")}.csv`,csv);
+    function plExportRows(pl){
+      const headers=["Section","Code/Head","Name","Qty","Amount 1","Amount 2","Amount 3"];
+      const rows=[
+        ...pl.skuRows.map(r=>["Revenue by SKU",r.code,r.name,r.qty,r.revenue.toFixed(2),r.cogs.toFixed(2),(r.revenue-r.cogs).toFixed(2)]),
+        ...pl.comboRows.map(r=>["Revenue by Combo",r.code,r.name,r.qty,r.revenue.toFixed(2),r.cogs.toFixed(2),(r.revenue-r.cogs).toFixed(2)]),
+        ["Totals","","Total Revenue / COGS / Gross Profit","",pl.totalRevenue.toFixed(2),pl.totalCOGS.toFixed(2),pl.grossProfit.toFixed(2)],
+        ...Object.entries(pl.opExByHead).map(([h,a])=>["Operating Expenses","",h,"",a.toFixed(2),"",""]),
+        ["Operating Expenses","","TOTAL","",pl.totalOpEx.toFixed(2),"",""],
+        ["Excluded (already per-unit)","","Inventory Purchases (Product Procurement)","",pl.procurementTotal.toFixed(2),"",""],
+        ["Excluded (already per-unit)","","Packaging","",pl.packagingTotal.toFixed(2),"",""],
+        ["Excluded (already per-unit)","","Shipping & Courier","",pl.shippingTotal.toFixed(2),"",""],
+        ...Object.entries(pl.otherIncomeByHead).map(([h,a])=>["Other Income","",h,"",a.toFixed(2),"",""]),
+        ["Other Income","","TOTAL","",pl.totalOtherIncome.toFixed(2),"",""],
+        ["Result","","NET PROFIT / LOSS","",pl.netProfit.toFixed(2),"",""],
+      ];
+      return{headers,rows};
     }
 
     function PLView({pl,label}){
@@ -3300,7 +3437,7 @@ function FinancialsView({investors,setInvestors,investments,setInvestments,expen
           </div>
 
           <Card className="mb-4">
-            <div className="flex items-center justify-between mb-3"><h3 className="font-bold text-lg" style={{fontFamily:F.display,color:C.darkText}}>Revenue by Product & Combo</h3><button onClick={()=>exportPL(pl,label)} className="inline-flex items-center gap-1 text-xs font-bold" style={{color:C.zenkyOrange}}><Download size={13}/>Export Full P&L</button></div>
+            <div className="flex items-center justify-between mb-3"><h3 className="font-bold text-lg" style={{fontFamily:F.display,color:C.darkText}}>Revenue by Product & Combo</h3><ExportMenu title={`PL_Statement_${label}`} {...plExportRows(pl)} label="Export Full P&L"/></div>
             {pl.skuRows.length>0&&<PLSortableTable rows={pl.skuRows.map(r=>({...r,gp:r.revenue-r.cogs}))} title="SKUs"/>}
             {pl.comboRows.length>0&&<PLSortableTable rows={pl.comboRows.map(r=>({...r,gp:r.revenue-r.cogs}))} title="Combos"/>}
             {pl.skuRows.length===0&&pl.comboRows.length===0&&<p className="text-sm" style={{color:C.lightText}}>No sales recorded for this period.</p>}
@@ -3355,12 +3492,6 @@ function FinancialsView({investors,setInvestors,investments,setInvestments,expen
       // each row keeps the balance value that was true as of its own date.
       const{sorted,sortKey,sortDir,toggleSort}=useSortableRows(withBalance,"date","asc");
 
-      function exportLedger(){
-        let csv="Date,Description,Money In,Money Out,Balance\n";
-        withBalance.forEach(e=>csv+=`${e.date},"${e.desc}",${e.in.toFixed(2)},${e.out.toFixed(2)},${e.balance.toFixed(2)}\n`);
-        downloadCsv("date_wise_ledger.csv",csv);
-      }
-
       return(
         <div>
           <div className="mb-4 p-3 rounded-xl text-xs" style={{backgroundColor:C.bgLight,color:C.lightText}}>
@@ -3371,7 +3502,7 @@ function FinancialsView({investors,setInvestors,investments,setInvestments,expen
             <div><label className="text-xs font-bold uppercase block mb-1" style={{color:C.lightText}}>To</label><Input type="date" value={toDate} onChange={e=>setToDate(e.target.value)}/></div>
             {(fromDate||toDate)&&<button onClick={()=>{setFromDate("");setToDate("");}} className="text-xs font-bold" style={{color:C.lightText}}>Clear filter</button>}
             <div className="flex-1"/>
-            {withBalance.length>0&&<button onClick={exportLedger} className="inline-flex items-center gap-1 text-xs font-bold" style={{color:C.zenkyOrange}}><Download size={13}/>Export</button>}
+            {withBalance.length>0&&<ExportMenu title="Date_Wise_Ledger" headers={["Date","Description","Money In","Money Out","Balance"]} rows={withBalance.map(e=>[e.date,e.desc,e.in.toFixed(2),e.out.toFixed(2),e.balance.toFixed(2)])}/>}
           </div>
           {withBalance.length===0?<Empty icon={Calendar} title="No entries in this range" message="Add investments, income, or expenses, or widen the date filter."/>:(
             <Card>
@@ -3424,7 +3555,7 @@ function FinancialsView({investors,setInvestors,investments,setInvestments,expen
                 <div key={fy}>
                   <div className="flex items-center justify-between mb-3">
                     <h3 className="font-black text-xl" style={{fontFamily:F.display,color:C.zenkyPurple}}>{fy}</h3>
-                    <button onClick={()=>exportPL(pl,fy)} className="inline-flex items-center gap-1 text-xs font-bold" style={{color:C.zenkyOrange}}><Download size={13}/>Export {fy}</button>
+                    <ExportMenu title={`PL_Statement_${fy}`} {...plExportRows(pl)} label={`Export ${fy}`}/>
                   </div>
                   <PLView pl={pl} label={fy}/>
                 </div>
@@ -3457,17 +3588,16 @@ function FinancialsView({investors,setInvestors,investments,setInvestments,expen
 
       const{sorted,sortKey,sortDir,toggleSort}=useSortableRows(perInvestor,"combined","desc");
 
-      function exportInvestor(inv){
-        let csv=`Investor Report — ${inv.name}\n\nDate,Description,Amount,Payment Mode,Comment\n`;
-        inv.timeline.forEach(t=>csv+=`${t.date},"${t.desc}",${Number(t.amount||0).toFixed(2)},${t.paymentMode||""},"${t.comment||""}"\n`);
-        csv+=`\nTotal Invested (includes expenses they covered),${inv.totalInvested.toFixed(2)}\n`;
-        downloadCsv(`investor_report_${inv.name.replace(/\s+/g,"_")}.csv`,csv);
+      function investorExportRows(inv){
+        const headers=["Date","Description","Amount","Payment Mode","Comment"];
+        const rows=inv.timeline.map(t=>[t.date,t.desc,Number(t.amount||0).toFixed(2),t.paymentMode||"",t.comment||""]);
+        rows.push(["","Total Invested (includes expenses they covered)",inv.totalInvested.toFixed(2),"",""]);
+        return{headers,rows};
       }
-      function exportAllInvestors(){
-        let csv="Name,Contact,Total Invested,Expenses Covered (₹),# Transactions\n";
-        sorted.forEach(inv=>csv+=`"${inv.name}","${inv.contact||""}",${inv.totalInvested.toFixed(2)},${inv.totalCovered.toFixed(2)},${inv.timeline.length}\n`);
-        downloadCsv("investors_summary.csv",csv);
-      }
+      const allInvestorsExport={
+        headers:["Name","Contact","Total Invested","Expenses Covered (₹)","# Transactions"],
+        rows:sorted.map(inv=>[inv.name,inv.contact||"",inv.totalInvested.toFixed(2),inv.totalCovered.toFixed(2),inv.timeline.length]),
+      };
 
       if(!investors.length)return<Empty icon={Users} title="No investors yet" message="Add investors in the Investors tab to see per-investor reports."/>;
 
@@ -3476,7 +3606,7 @@ function FinancialsView({investors,setInvestors,investments,setInvestments,expen
           <div className="mb-4 p-3 rounded-xl text-xs" style={{backgroundColor:C.bgLight,color:C.lightText}}>
             <strong>What this shows:</strong> for each investor, their total contribution — direct fund transfers plus any expenses they personally covered (which already count toward their investment total, so nothing here is double-counted). Click a row to see their full transaction history.
           </div>
-          <div className="flex justify-end mb-3"><button onClick={exportAllInvestors} className="inline-flex items-center gap-1 text-xs font-bold" style={{color:C.zenkyOrange}}><Download size={13}/>Export Summary (All Investors)</button></div>
+          <div className="flex justify-end mb-3"><ExportMenu title="Investors_Summary" {...allInvestorsExport} label="Export Summary (All Investors)"/></div>
           <Card>
             <div className="overflow-x-auto"><table className="w-full text-sm">
               <thead><tr>
@@ -3495,7 +3625,7 @@ function FinancialsView({investors,setInvestors,investments,setInvestments,expen
                       <td className="py-2 pr-3 font-bold" style={{fontFamily:F.mono,color:C.zenkyPurple}}>{fmtINR(inv.totalInvested)}</td>
                       <td className="py-2 pr-3" style={{fontFamily:F.mono,color:C.lightText}}>{inv.totalCovered>0?fmtINR(inv.totalCovered):"—"}</td>
                       <td className="py-2 pr-3 hidden sm:table-cell" style={{color:C.lightText}}>{inv.timeline.length}</td>
-                      <td className="py-2 pr-3 text-right"><button onClick={ev=>{ev.stopPropagation();exportInvestor(inv);}} className="text-xs font-bold" style={{color:C.zenkyOrange}}><Download size={13}/></button></td>
+                      <td className="py-2 pr-3 text-right" onClick={ev=>ev.stopPropagation()}><ExportMenu title={`Investor_Report_${inv.name}`} {...investorExportRows(inv)} label=""/></td>
                     </tr>
                     {isOpen&&(
                       <tr><td colSpan={5} className="pb-3">
@@ -3551,13 +3681,14 @@ function FinancialsView({investors,setInvestors,investments,setInvestments,expen
       return Object.values(totals).sort((a,b)=>b.amount-a.amount);
     },[]);
 
-    function exportMonthly(){
-      let csv="Month,Total Income,Total Expense,Net\n";
-      monthly.forEach(m=>csv+=`${m.key},${m.income.toFixed(2)},${m.expense.toFixed(2)},${(m.income-m.expense).toFixed(2)}\n`);
-      csv+="\nMonth,Type,Head,Amount\n";
-      monthly.forEach(m=>Object.entries(m.byHead).forEach(([hk,amt])=>{const[type,head]=hk.split(":");csv+=`${m.key},${type},"${head}",${amt.toFixed(2)}\n`;}));
-      downloadCsv("financial_monthly_report.csv",csv);
-    }
+    const monthlyExport={
+      headers:["Month","Type/Head","Amount"],
+      rows:[
+        ...monthly.map(m=>[m.key,"— Total Income",m.income.toFixed(2)]),
+        ...monthly.map(m=>[m.key,"— Total Expense",m.expense.toFixed(2)]),
+        ...monthly.flatMap(m=>Object.entries(m.byHead).map(([hk,amt])=>{const[type,head]=hk.split(":");return[m.key,`${type}: ${head}`,amt.toFixed(2)];})),
+      ],
+    };
 
     function MonthlyView(){
       if(!monthly.length)return<Empty icon={IndianRupee} title="No data yet" message="Add income, investments, or expenses to see monthly reports."/>;
@@ -3580,7 +3711,7 @@ function FinancialsView({investors,setInvestors,investments,setInvestments,expen
               {byPerson.some(p=>p.name==="Unattributed")&&<p className="text-xs mt-3" style={{color:C.lightText}}>"Unattributed" expenses don't have a "Spent By" person recorded — edit them in the Expenses tab to assign one.</p>}
             </Card>
           )}
-          <div className="flex justify-end mb-4"><button onClick={exportMonthly} className="inline-flex items-center gap-1 text-xs font-bold" style={{color:C.zenkyOrange}}><Download size={13}/>Export Monthly Report</button></div>
+          <div className="flex justify-end mb-4"><ExportMenu title="Financial_Monthly_Report" {...monthlyExport} label="Export Monthly Report"/></div>
           <div className="space-y-4">
             {monthly.map(m=>(
               <Card key={m.key}>
@@ -3647,14 +3778,10 @@ function FinancialsView({investors,setInvestors,investments,setInvestments,expen
     const available=total-utilized;
     const fundedExpenses=useMemo(()=>expenses.filter(e=>e.fundedBy===inv.id).sort((a,b)=>new Date(a.date)-new Date(b.date)),[]);
 
-    function exportStatement(){
-      let csv=`ZenkyBox — Investor Statement\nInvestor: ${inv.name}\nGenerated: ${new Date().toLocaleDateString("en-IN")}\n\n`;
-      csv+="Date,Description,Payment Mode,Amount,Comment\n";
-      timeline.forEach(t=>csv+=`${t.date},"${t.desc}",${t.paymentMode||""},${t.amount.toFixed(2)},"${t.comment||""}"\n`);
-      csv+=`\nTotal Invested,${total.toFixed(2)}\n`;
-      downloadCsv(`ZenkyBox_Investor_Statement_${inv.name.replace(/\s+/g,"_")}.csv`,csv);
-      logActivity?.("Investor statement exported",inv.name);
-    }
+    const statementExportRows={
+      headers:["Date","Description","Payment Mode","Amount","Comment"],
+      rows:[...timeline.map(t=>[t.date,t.desc,t.paymentMode||"",t.amount.toFixed(2),t.comment||""]),["","Total Invested","",total.toFixed(2),""]],
+    };
 
     return(
       <div>
@@ -3714,7 +3841,7 @@ function FinancialsView({investors,setInvestors,investments,setInvestments,expen
 
             <div className="flex items-center justify-between mb-3">
               <h3 className="font-bold text-lg" style={{fontFamily:F.display,color:C.darkText}}>Date-wise Investment History</h3>
-              <button onClick={exportStatement} className="inline-flex items-center gap-1.5 text-xs font-bold" style={{color:C.zenkyOrange}}><Download size={13}/>Export Statement</button>
+              <ExportMenu title={`ZenkyBox_Investor_Statement_${inv.name}`} {...statementExportRows} label="Export Statement" onExport={fmt=>logActivity?.("Investor statement exported",`${inv.name} (${fmt})`)}/>
             </div>
 
             {timeline.length===0?(
@@ -4036,10 +4163,10 @@ export default function App(){
               {view==="combos"&&<CombosView skus={skus} combos={combos} setCombos={setCombos} showToast={showToast} role={role} logActivity={logActivity}/>}
               {view==="upload"&&<UploadView skus={skus} combos={combos} setSkus={setSkus} reports={reports} setReports={setReports} salesLines={salesLines} setSalesLines={setSalesLines} financialSettings={financialSettings} logActivity={logActivity} showToast={showToast}/>}
               {view==="reports"&&<ReportsView reports={reports} skus={skus} combos={combos}/>}
-              {view==="sales-reports"&&<SalesReportsView salesLines={salesLines} skus={skus} combos={combos}/>}
+              {view==="sales-reports"&&<SalesReportsView salesLines={salesLines} skus={skus} combos={combos} channelProfitData={channelProfitData} financialSettings={financialSettings}/>}
               {view==="costing"&&<CostingPricingView skus={skus}/>}
               {view==="profit-calc"&&<ProfitCalculatorView skus={skus} combos={combos} channelProfitData={channelProfitData} setChannelProfitData={setChannelProfitData} financialSettings={financialSettings} logActivity={logActivity} showToast={showToast}/>}
-              {view==="financials"&&<FinancialsView investors={investors} setInvestors={setInvestors} investments={investments} setInvestments={setInvestments} expenses={expenses} setExpenses={setExpenses} income={income} setIncome={setIncome} salesLines={salesLines} skus={skus} combos={combos} reports={reports} activityLog={activityLog} adminPin={adminPin} loginCreds={loginCreds} financialSettings={financialSettings} setFinancialSettings={setFinancialSettings} forceSaveNow={forceSaveNow} logActivity={logActivity} showToast={showToast}/>}
+              {view==="financials"&&<FinancialsView investors={investors} setInvestors={setInvestors} investments={investments} setInvestments={setInvestments} expenses={expenses} setExpenses={setExpenses} income={income} setIncome={setIncome} salesLines={salesLines} skus={skus} combos={combos} reports={reports} activityLog={activityLog} adminPin={adminPin} loginCreds={loginCreds} financialSettings={financialSettings} setFinancialSettings={setFinancialSettings} channelProfitData={channelProfitData} forceSaveNow={forceSaveNow} logActivity={logActivity} showToast={showToast}/>}
               {view==="source-data"&&<SourceDataView activityLog={activityLog} synced={synced} salesLines={salesLines} setSalesLines={setSalesLines} reports={reports} setReports={setReports} skus={skus} setSkus={setSkus} combos={combos} adminPin={adminPin} loginCreds={loginCreds} currentUser={currentUser} investors={investors} investments={investments} expenses={expenses} income={income} forceSaveNow={forceSaveNow} logActivity={logActivity} showToast={showToast}/>}
               {view==="access"&&<AccessManagementView role={role} adminPin={adminPin} setAdminPin={setAdminPin} loginCreds={loginCreds} setLoginCreds={setLoginCreds} users={users} setUsers={setUsers} showToast={showToast} logActivity={logActivity}/>}
             </>
