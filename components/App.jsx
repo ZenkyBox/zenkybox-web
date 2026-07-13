@@ -2294,6 +2294,144 @@ function SalesReportsView({salesLines,skus,combos,channelProfitData,financialSet
 }
 
 /* ═══ SOURCE DATA (Admin only) ═══ */
+/* Reverses whatever stock a sales line originally deducted (all of a combo's
+   components if it was a combo sale, or the single SKU if direct) — used
+   when editing or deleting a historical line, so correcting a mistake
+   doesn't leave stock permanently short or long. */
+function reverseStockForLine(line,skus,combos){
+  const comboMap=Object.fromEntries(combos.map(c=>[c.sku,c]));
+  const updated=skus.map(s=>({...s}));
+  if(line.matchType==="combo"){
+    const combo=comboMap[line.sku];
+    combo?.components?.forEach(comp=>{
+      const s=updated.find(x=>x.sku===comp.sku);
+      if(s)s.stock+=comp.qty*line.qty;
+    });
+  }else{
+    const s=updated.find(x=>x.sku===line.sku);
+    if(s)s.stock+=line.qty;
+  }
+  return updated;
+}
+/* Deducts stock for a (possibly new) SKU/combo code + qty — same logic bulk
+   upload and manual order entry already use. */
+function applyStockForCode(code,qty,matchType,skus,combos){
+  const comboMap=Object.fromEntries(combos.map(c=>[c.sku,c]));
+  const updated=skus.map(s=>({...s}));
+  if(matchType==="combo"){
+    const combo=comboMap[code];
+    combo?.components?.forEach(comp=>{
+      const s=updated.find(x=>x.sku===comp.sku);
+      if(s)s.stock=Math.max(0,s.stock-comp.qty*qty);
+    });
+  }else{
+    const s=updated.find(x=>x.sku===code);
+    if(s)s.stock=Math.max(0,s.stock-qty);
+  }
+  return updated;
+}
+
+function SalesRecordsEditor({salesLines,setSalesLines,skus,setSkus,combos,logActivity,showToast}){
+  const [query,setQuery]=useState("");
+  const [editId,setEditId]=useState(null);
+  const [editValues,setEditValues]=useState({});
+  const [deleteId,setDeleteId]=useState(null);
+  const skuMap=useMemo(()=>Object.fromEntries(skus.map(s=>[s.sku,s])),[skus]);
+  const comboMap=useMemo(()=>Object.fromEntries(combos.map(c=>[c.sku,c])),[combos]);
+  const options=useMemo(()=>[
+    ...skus.map(s=>({code:s.sku,label:`${s.sku} — ${s.name}`,type:"direct"})),
+    ...combos.map(c=>({code:c.sku,label:`${c.sku} — ${c.name}`,type:"combo"})),
+  ],[skus,combos]);
+
+  const filtered=useMemo(()=>{
+    const sorted=[...salesLines].sort((a,b)=>new Date(b.date)-new Date(a.date));
+    if(!query.trim())return sorted.slice(0,200); // cap for performance; search to find older ones
+    const q=query.toLowerCase();
+    return sorted.filter(l=>l.sku.toLowerCase().includes(q)||(l.name||"").toLowerCase().includes(q)||(l.orderId||"").toLowerCase().includes(q));
+  },[salesLines,query]);
+
+  function startEdit(l){
+    setEditId(l.id);
+    setEditValues({code:l.sku,qty:l.qty,price:l.qty>0?(l.revenue/l.qty).toFixed(2):"",date:l.date?.slice(0,10)||"",orderId:l.orderId||""});
+  }
+
+  function saveEdit(line){
+    const newCode=editValues.code,newQty=Number(editValues.qty)||0,newPrice=Number(editValues.price)||0;
+    if(!newCode){showToast("error","Choose a SKU or combo.");return;}
+    if(newQty<=0){showToast("error","Quantity must be greater than 0.");return;}
+    const combo=comboMap[newCode],sku=skuMap[newCode];
+    if(!combo&&!sku){showToast("error",`"${newCode}" not found in Catalog or Combos.`);return;}
+    const newMatchType=combo?"combo":"direct";
+    const newName=combo?.name||sku?.name||newCode;
+
+    // Undo the old line's stock impact, then apply the new one — handles
+    // combo-to-SKU, SKU-to-combo, or same-type quantity/code changes correctly.
+    const afterReversal=reverseStockForLine(line,skus,combos);
+    const comboMapForApply=Object.fromEntries(combos.map(c=>[c.sku,c]));
+    const finalSkus=applyStockForCode(newCode,newQty,newMatchType,afterReversal,combos);
+
+    const unitCost=unitCostOf(newCode,newMatchType,skuMap,comboMapForApply);
+    const revenue=newPrice*newQty;
+    const cost=unitCost*newQty;
+
+    setSkus(finalSkus);
+    setSalesLines(salesLines.map(l=>l.id===line.id?{...l,sku:newCode,name:newName,matchType:newMatchType,qty:newQty,unitCost,cost,revenue,earning:revenue-cost,orderId:editValues.orderId,date:editValues.date?new Date(editValues.date).toISOString():l.date}:l));
+    logActivity?.("Sales record edited",`${line.sku} ×${line.qty} → ${newCode} ×${newQty}`);
+    showToast("success",`Updated — ${line.sku} ×${line.qty} is now ${newCode} ×${newQty}. Stock adjusted. ✨`);
+    setEditId(null);
+  }
+
+  function deleteLine(line){
+    const restoredSkus=reverseStockForLine(line,skus,combos);
+    setSkus(restoredSkus);
+    setSalesLines(salesLines.filter(l=>l.id!==line.id));
+    logActivity?.("Sales record deleted",`${line.sku} ×${line.qty} (order ${line.orderId||"—"}) — stock restored`);
+    showToast("success","Sales record removed, stock restored. 🗑️");
+    setDeleteId(null);
+  }
+
+  return(
+    <Card className="mb-6">
+      <h3 className="font-bold text-lg mb-2" style={{fontFamily:F.display,color:C.darkText}}>Edit Sales Records</h3>
+      <p className="text-xs mb-4" style={{color:C.lightText}}>
+        Correct an individual historical sale — wrong SKU, quantity, price, or date. Changing the SKU/combo or quantity automatically reverses the old stock deduction and applies the new one, so stock levels stay accurate.
+      </p>
+      <Input placeholder="Search by SKU, product name, or order ID…" value={query} onChange={e=>setQuery(e.target.value)} className="mb-4"/>
+      <div className="overflow-x-auto max-h-96 overflow-y-auto"><table className="w-full text-sm">
+        <thead><tr style={{color:C.lightText}}><th className="py-2 pr-3 text-left text-xs uppercase font-bold">Date</th><th className="py-2 pr-3 text-left text-xs uppercase font-bold">SKU/Combo</th><th className="py-2 pr-3 text-left text-xs uppercase font-bold">Qty</th><th className="py-2 pr-3 text-left text-xs uppercase font-bold">Price/Unit</th><th className="py-2 pr-3 text-left text-xs uppercase font-bold hidden sm:table-cell">Order ID</th><th/></tr></thead>
+        <tbody>{filtered.map(l=>{
+          const isEdit=editId===l.id;
+          const pricePerUnit=l.qty>0?l.revenue/l.qty:0;
+          return(
+            <tr key={l.id} className="border-t" style={{borderColor:C.border}}>
+              <td className="py-2 pr-3" style={{fontFamily:F.mono,color:C.lightText}}>{isEdit?<Input type="date" value={editValues.date} onChange={e=>setEditValues({...editValues,date:e.target.value})}/>:(l.date?.slice(0,10)||"—")}</td>
+              <td className="py-2 pr-3">{isEdit?(
+                <select className="border rounded-lg px-2 py-1.5 text-sm w-full" style={{borderColor:C.border}} value={editValues.code} onChange={e=>setEditValues({...editValues,code:e.target.value})}>
+                  {options.map(o=><option key={o.code} value={o.code}>{o.label}</option>)}
+                </select>
+              ):(<span style={{fontFamily:F.mono,fontWeight:600}}>{l.sku}</span>)}
+                <div className="text-xs" style={{color:C.lightText}}>{l.name}</div>
+              </td>
+              <td className="py-2 pr-3">{isEdit?<Input type="number" value={editValues.qty} onChange={e=>setEditValues({...editValues,qty:e.target.value})} className="w-16"/>:<span style={{fontFamily:F.mono,fontWeight:600}}>{fmt(l.qty)}</span>}</td>
+              <td className="py-2 pr-3">{isEdit?<Input type="number" value={editValues.price} onChange={e=>setEditValues({...editValues,price:e.target.value})} className="w-20"/>:fmtINR(pricePerUnit)}</td>
+              <td className="py-2 pr-3 hidden sm:table-cell" style={{color:C.lightText}}>{isEdit?<Input value={editValues.orderId} onChange={e=>setEditValues({...editValues,orderId:e.target.value})} className="w-28"/>:(l.orderId||"—")}</td>
+              <td className="py-2 pr-3">
+                <div className="flex items-center gap-1 justify-end">
+                  {isEdit?(<><GhostButton title="Save" onClick={()=>saveEdit(l)}><Check size={13}/></GhostButton><GhostButton title="Cancel" onClick={()=>setEditId(null)}><X size={13}/></GhostButton></>)
+                  :deleteId===l.id?(<><GhostButton title="Confirm delete (restores stock)" onClick={()=>deleteLine(l)}><Check size={13}/></GhostButton><GhostButton title="Cancel" onClick={()=>setDeleteId(null)}><X size={13}/></GhostButton></>)
+                  :(<><GhostButton title="Edit" onClick={()=>startEdit(l)}><Pencil size={13}/></GhostButton><GhostButton title="Delete" onClick={()=>setDeleteId(l.id)}><Trash2 size={13}/></GhostButton></>)}
+                </div>
+              </td>
+            </tr>
+          );
+        })}</tbody>
+      </table></div>
+      {filtered.length===0&&<p className="text-sm text-center py-6" style={{color:C.lightText}}>No matching sales records.</p>}
+      {!query.trim()&&salesLines.length>200&&<p className="text-xs mt-2" style={{color:C.lightText}}>Showing the 200 most recent — search to find older records.</p>}
+    </Card>
+  );
+}
+
 function SourceDataView({activityLog,synced,salesLines,setSalesLines,reports,setReports,skus,setSkus,combos,adminPin,loginCreds,currentUser,investors,investments,expenses,income,forceSaveNow,logActivity,showToast}){
   const dbUrl=process.env.NEXT_PUBLIC_SUPABASE_URL||"";
   const [scanResult,setScanResult]=useState(null); // {dupeGroups, extraQtyBySku, linesToRemove}
@@ -2427,6 +2565,8 @@ function SourceDataView({activityLog,synced,salesLines,setSalesLines,reports,set
           Recommended: download one every 7 days, and store it somewhere outside Supabase/Vercel entirely — email it to yourself, save to Google Drive, or a folder on your computer.
         </p>
       </Card>
+
+      <SalesRecordsEditor salesLines={salesLines} setSalesLines={setSalesLines} skus={skus} setSkus={setSkus} combos={combos} logActivity={logActivity} showToast={showToast}/>
 
       <Card className="mb-6">
         <div className="flex items-center gap-2 mb-3">
