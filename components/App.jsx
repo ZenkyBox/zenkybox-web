@@ -761,12 +761,35 @@ function ComboReadinessView({skus,combos}){
 }
 
 /* ═══ CATALOG ═══ */
+/* Lets you view and replace images on an EXISTING SKU/combo directly from
+   its table row — the Add form already had image upload, but editing an
+   existing entry's images had no path other than deleting and re-adding it. */
+function ImageEditModal({title,images,onSave,onClose}){
+  const [local,setLocal]=useState(images||[]);
+  return(
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4" style={{backgroundColor:"rgba(0,0,0,0.5)"}} onClick={onClose}>
+      <div className="rounded-2xl p-5 w-full max-w-md" style={{backgroundColor:C.softWhite}} onClick={e=>e.stopPropagation()}>
+        <div className="flex items-center justify-between mb-4">
+          <h3 className="font-bold text-lg" style={{fontFamily:F.display,color:C.darkText}}>Images — {title}</h3>
+          <button onClick={onClose}><X size={18} style={{color:C.lightText}}/></button>
+        </div>
+        <ImageGallery images={local} onAddImages={imgs=>setLocal([...local,...imgs])} onRemoveImage={i=>setLocal(local.filter((_,j)=>j!==i))}/>
+        <div className="mt-4 flex gap-2">
+          <PrimaryButton onClick={()=>{onSave(local);onClose();}}><Check size={15}/>Save Images</PrimaryButton>
+          <button onClick={onClose} className="px-4 py-2.5 rounded-xl text-sm font-bold border-2" style={{borderColor:C.border,color:C.lightText,fontFamily:F.display}}>Cancel</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function Catalog({skus,setSkus,combos,setCombos,salesLines,setSalesLines,channelProfitData,setChannelProfitData,showToast,role,logActivity}){
   const blank={sku:"",name:"",stock:"",reorderLevel:"",procurementCost:"",images:[]};
   const [form,setForm]=useState(blank);
   const [editingSku,setEditingSku]=useState(null);
   const [editValues,setEditValues]=useState({});
   const [pendingDelete,setPendingDelete]=useState(null);
+  const [imageEditTarget,setImageEditTarget]=useState(null); // sku code currently being edited for images
   const [query,setQuery]=useState("");
   const [clearConfirmText,setClearConfirmText]=useState("");
   const [showClearBox,setShowClearBox]=useState(false);
@@ -895,7 +918,12 @@ function Catalog({skus,setSkus,combos,setCombos,salesLines,setSalesLines,channel
                   const isEdit=editingSku===s.sku;
                   return(
                     <tr key={s.sku} className="border-t" style={{borderColor:C.border}}>
-                      <td className="py-2 pr-2 hidden sm:table-cell">{s.images?.[0]&&<img src={s.images[0]} alt="" className="w-8 h-8 rounded object-cover"/>}</td>
+                      <td className="py-2 pr-2 hidden sm:table-cell">
+                        <button onClick={()=>setImageEditTarget(s.sku)} className="relative group">
+                          {s.images?.[0]?<img src={s.images[0]} alt="" className="w-8 h-8 rounded object-cover"/>:<div className="w-8 h-8 rounded border-2 border-dashed flex items-center justify-center" style={{borderColor:C.zenkyPink}}><ImageIcon size={12} style={{color:C.zenkyPink}}/></div>}
+                          <div className="absolute inset-0 rounded bg-black bg-opacity-0 group-hover:bg-opacity-40 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-all"><Pencil size={10} color="white"/></div>
+                        </button>
+                      </td>
                       <td className="py-2 pr-2" style={{fontFamily:F.mono,fontWeight:600,color:C.darkText,whiteSpace:"nowrap"}}>{isEdit?<Input value={editValues.sku} onChange={e=>setEditValues({...editValues,sku:e.target.value})} className="w-32" title="Renaming updates every combo, sales record, and Profit Calculator entry that references this code."/>:s.sku}</td>
                       <td className="py-2 pr-2">{isEdit?<Input value={editValues.name} onChange={e=>setEditValues({...editValues,name:e.target.value})}/>:s.name}</td>
                       <td className="py-2 pr-2">{isEdit?<Input type="number" value={editValues.stock} onChange={e=>setEditValues({...editValues,stock:e.target.value})} className="w-20"/>:<span style={{fontFamily:F.mono,fontWeight:600}}>{fmt(s.stock)}</span>}</td>
@@ -919,6 +947,22 @@ function Catalog({skus,setSkus,combos,setCombos,salesLines,setSalesLines,channel
           </div>
         </Card>
       )}
+      {imageEditTarget&&(()=>{
+        const target=skus.find(s=>s.sku===imageEditTarget);
+        if(!target)return null;
+        return(
+          <ImageEditModal
+            title={`${target.sku} — ${target.name}`}
+            images={target.images||[]}
+            onSave={newImages=>{
+              setSkus(skus.map(s=>s.sku===imageEditTarget?{...s,images:newImages}:s));
+              logActivity?.("SKU images updated",target.sku);
+              showToast("success","Images updated. ✨");
+            }}
+            onClose={()=>setImageEditTarget(null)}
+          />
+        );
+      })()}
     </div>
   );
 }
@@ -929,6 +973,7 @@ function CombosView({skus,combos,setCombos,showToast,role,logActivity}){
   const [form,setForm]=useState(blank);
   const [editId,setEditId]=useState(null);
   const [pendingDelete,setPendingDelete]=useState(null);
+  const [imageEditTarget,setImageEditTarget]=useState(null); // combo id currently being edited for images
   const [expanded,setExpanded]=useState({});
   const [clearConfirmText,setClearConfirmText]=useState("");
   const [showClearBox,setShowClearBox]=useState(false);
@@ -1039,6 +1084,7 @@ function CombosView({skus,combos,setCombos,showToast,role,logActivity}){
                   </button>
                   <div className="flex items-center gap-2">
                     {ready>0?<Stamp tone="mint">Ready ×{ready}</Stamp>:<Stamp tone="pink">Short</Stamp>}
+                    <GhostButton title="Edit Images" onClick={()=>setImageEditTarget(c.id)}><ImageIcon size={13}/></GhostButton>
                     {role==="admin"&&(pendingDelete===c.id?(<><GhostButton title="Confirm" onClick={()=>{setCombos(combos.filter(x=>x.id!==c.id));setPendingDelete(null);logActivity?.("Combo deleted",c.sku);}}><Check size={13}/></GhostButton><GhostButton title="Cancel" onClick={()=>setPendingDelete(null)}><X size={13}/></GhostButton></>)
                     :(<><GhostButton title="Edit" onClick={()=>{setForm({sku:c.sku,name:c.name,components:c.components?.map(x=>({...x}))||[],images:c.images||[]});setEditId(c.id);window.scrollTo(0,0);}}><Pencil size={13}/></GhostButton><GhostButton title="Delete" onClick={()=>setPendingDelete(c.id)}><Trash2 size={13}/></GhostButton></>))}
                   </div>
@@ -1054,6 +1100,22 @@ function CombosView({skus,combos,setCombos,showToast,role,logActivity}){
           })}
         </div>
       )}
+      {imageEditTarget&&(()=>{
+        const target=combos.find(c=>c.id===imageEditTarget);
+        if(!target)return null;
+        return(
+          <ImageEditModal
+            title={`${target.sku} — ${target.name}`}
+            images={target.images||[]}
+            onSave={newImages=>{
+              setCombos(combos.map(c=>c.id===imageEditTarget?{...c,images:newImages}:c));
+              logActivity?.("Combo images updated",target.sku);
+              showToast("success","Images updated. ✨");
+            }}
+            onClose={()=>setImageEditTarget(null)}
+          />
+        );
+      })()}
     </div>
   );
 }
@@ -1593,7 +1655,7 @@ function ReportsView({reports,skus,combos}){
 /* Searchable SKU picker — filters by SKU code AND product name, since a
    native <select> only type-ahead-matches from the start of its option text
    (the code), making it impossible to find a SKU by typing its name. */
-function SkuSearchPicker({skus,value,onChange,placeholder="Search SKU code or name…"}){
+function SkuSearchPicker({skus,value,onChange,placeholder="Search SKU code or name…",textSize="0.875rem"}){
   const [query,setQuery]=useState("");
   const [open,setOpen]=useState(false);
   const ref=useRef(null);
@@ -1610,17 +1672,27 @@ function SkuSearchPicker({skus,value,onChange,placeholder="Search SKU code or na
   },[skus,query]);
   return(
     <div className="relative" ref={ref}>
-      <Input
-        placeholder={selected?`${selected.sku} — ${selected.name}`:placeholder}
-        value={query}
-        onChange={e=>{setQuery(e.target.value);setOpen(true);}}
-        onFocus={()=>setOpen(true)}
-      />
+      {selected&&!open?(
+        // Show the selection as real, bold text (not a faded placeholder) —
+        // click to reopen search and change it.
+        <button onClick={()=>{setQuery("");setOpen(true);}} className="w-full text-left px-3 py-2.5 rounded-xl border-2 truncate" style={{borderColor:C.border,backgroundColor:C.softWhite,fontFamily:F.body}}>
+          <span style={{fontFamily:F.mono,fontWeight:700,color:C.darkText,fontSize:textSize}}>{selected.sku}</span>
+          <span style={{color:C.lightText,fontSize:textSize}}> — {selected.name}</span>
+        </button>
+      ):(
+        <Input
+          placeholder={placeholder}
+          value={query}
+          onChange={e=>{setQuery(e.target.value);setOpen(true);}}
+          onFocus={()=>setOpen(true)}
+          style={{fontSize:textSize}}
+        />
+      )}
       {open&&(
         <div className="absolute left-0 right-0 mt-1 rounded-xl shadow-lg z-20 max-h-60 overflow-y-auto py-1" style={{backgroundColor:C.softWhite,border:`2px solid ${C.border}`}}>
           {filtered.length===0&&<div className="px-3 py-2 text-sm" style={{color:C.lightText}}>No matches.</div>}
           {filtered.map(s=>(
-            <button key={s.sku} onClick={()=>{onChange(s.sku);setQuery("");setOpen(false);}} className="w-full text-left px-3 py-2 text-sm hover:opacity-70" style={{color:C.darkText}}>
+            <button key={s.sku} onClick={()=>{onChange(s.sku);setQuery("");setOpen(false);}} className="w-full text-left px-3 py-2 hover:opacity-70" style={{color:C.darkText,fontSize:textSize}}>
               <span style={{fontFamily:F.mono,fontWeight:600}}>{s.sku}</span> — {s.name} {s.procurementCost?<span style={{color:C.lightText}}>(₹{s.procurementCost})</span>:null}
             </button>
           ))}
@@ -1703,10 +1775,10 @@ function CostingPricingView({skus}){
               {comboRows.map((row,i)=>{
                 const rowSku=skus.find(s=>s.sku===row.sku);
                 return(
-                  <div key={i} className="flex items-center gap-2">
-                    <div className="flex-1"><SkuSearchPicker skus={skus} value={row.sku} onChange={v=>updateComboRow(i,"sku",v)}/></div>
-                    <Input type="number" value={row.qty} onChange={e=>updateComboRow(i,"qty",e.target.value)} className="w-20" placeholder="Qty"/>
-                    <span className="text-xs w-20 text-right" style={{color:C.lightText,fontFamily:F.mono}}>{rowSku?fmtINR(Number(rowSku.procurementCost||0)*(Number(row.qty)||0)):"—"}</span>
+                  <div key={i} className="grid items-center gap-2" style={{gridTemplateColumns:"1fr 64px 84px auto"}}>
+                    <SkuSearchPicker skus={skus} value={row.sku} onChange={v=>updateComboRow(i,"sku",v)} textSize="1rem"/>
+                    <Input type="number" value={row.qty} onChange={e=>updateComboRow(i,"qty",e.target.value)} placeholder="Qty" style={{width:"64px",fontSize:"0.75rem",padding:"0.5rem"}}/>
+                    <span className="text-xs text-right" style={{color:C.lightText,fontFamily:F.mono}}>{rowSku?fmtINR(Number(rowSku.procurementCost||0)*(Number(row.qty)||0)):"—"}</span>
                     <GhostButton title="Remove" onClick={()=>removeComboRow(i)}><X size={14}/></GhostButton>
                   </div>
                 );
