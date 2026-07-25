@@ -1590,15 +1590,68 @@ function ReportsView({reports,skus,combos}){
 }
 
 /* ═══ COSTING & PRICING ═══ */
+/* Searchable SKU picker — filters by SKU code AND product name, since a
+   native <select> only type-ahead-matches from the start of its option text
+   (the code), making it impossible to find a SKU by typing its name. */
+function SkuSearchPicker({skus,value,onChange,placeholder="Search SKU code or name…"}){
+  const [query,setQuery]=useState("");
+  const [open,setOpen]=useState(false);
+  const ref=useRef(null);
+  const selected=skus.find(s=>s.sku===value);
+  useEffect(()=>{
+    function onClick(e){if(ref.current&&!ref.current.contains(e.target))setOpen(false);}
+    document.addEventListener("mousedown",onClick);
+    return()=>document.removeEventListener("mousedown",onClick);
+  },[]);
+  const filtered=useMemo(()=>{
+    const q=query.trim().toLowerCase();
+    if(!q)return skus.slice(0,50);
+    return skus.filter(s=>s.sku.toLowerCase().includes(q)||s.name.toLowerCase().includes(q)).slice(0,50);
+  },[skus,query]);
+  return(
+    <div className="relative" ref={ref}>
+      <Input
+        placeholder={selected?`${selected.sku} — ${selected.name}`:placeholder}
+        value={query}
+        onChange={e=>{setQuery(e.target.value);setOpen(true);}}
+        onFocus={()=>setOpen(true)}
+      />
+      {open&&(
+        <div className="absolute left-0 right-0 mt-1 rounded-xl shadow-lg z-20 max-h-60 overflow-y-auto py-1" style={{backgroundColor:C.softWhite,border:`2px solid ${C.border}`}}>
+          {filtered.length===0&&<div className="px-3 py-2 text-sm" style={{color:C.lightText}}>No matches.</div>}
+          {filtered.map(s=>(
+            <button key={s.sku} onClick={()=>{onChange(s.sku);setQuery("");setOpen(false);}} className="w-full text-left px-3 py-2 text-sm hover:opacity-70" style={{color:C.darkText}}>
+              <span style={{fontFamily:F.mono,fontWeight:600}}>{s.sku}</span> — {s.name} {s.procurementCost?<span style={{color:C.lightText}}>(₹{s.procurementCost})</span>:null}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function CostingPricingView({skus}){
+  const [planMode,setPlanMode]=useState("single"); // "single" | "combo"
   const [selectedSku,setSelectedSku]=useState("");
+  const [comboRows,setComboRows]=useState([{sku:"",qty:1}]);
   const [costs,setCosts]=useState({packaging:0,closingFee:0,cob:0,shipping:0,cogs:0,misc:0});
   const [margin,setMargin]=useState(30);
 
   const sku=useMemo(()=>skus.find(s=>s.sku===selectedSku),[skus,selectedSku]);
-  const procurement=Number(sku?.procurementCost||0);
 
-  const totalCost=useMemo(()=>procurement+Number(costs.packaging)+Number(costs.closingFee)+Number(costs.cob)+Number(costs.shipping)+Number(costs.cogs)+Number(costs.misc),[procurement,costs]);
+  const comboProcurement=useMemo(()=>comboRows.reduce((sum,r)=>{
+    const s=skus.find(x=>x.sku===r.sku);
+    return sum+(Number(s?.procurementCost||0)*(Number(r.qty)||0));
+  },0),[comboRows,skus]);
+
+  const procurement=planMode==="combo"?comboProcurement:Number(sku?.procurementCost||0);
+  const hasSelection=planMode==="combo"?comboRows.some(r=>r.sku):!!selectedSku;
+
+  // GST at 18% on Closing Fee + Shipping Cost — matches how Amazon actually
+  // charges GST on its fees (verified against real account data elsewhere
+  // in the app's Profit Calculator).
+  const gstOnFees=useMemo(()=>((Number(costs.closingFee)||0)+(Number(costs.shipping)||0))*0.18,[costs.closingFee,costs.shipping]);
+  const totalCost=useMemo(()=>procurement+Number(costs.packaging)+Number(costs.closingFee)+Number(costs.cob)+Number(costs.shipping)+Number(costs.cogs)+Number(costs.misc)+gstOnFees,[procurement,costs,gstOnFees]);
 
   // Selling price = Total Cost / (1 - margin%)  [margin on selling price basis]
   const sellingPrice=useMemo(()=>margin>=100?0:totalCost/(1-margin/100),[totalCost,margin]);
@@ -1606,33 +1659,66 @@ function CostingPricingView({skus}){
   // MRP = Selling Price / (1 - discount%) — shows what MRP to set to offer X% discount from MRP
   const mrpOptions=useMemo(()=>MRP_DISCOUNTS.map(d=>({discount:d,mrp:d>=100?0:sellingPrice/(1-d/100)})),[sellingPrice]);
 
+  function addComboRow(){setComboRows([...comboRows,{sku:"",qty:1}]);}
+  function updateComboRow(i,field,value){const rows=[...comboRows];rows[i]={...rows[i],[field]:value};setComboRows(rows);}
+  function removeComboRow(i){setComboRows(comboRows.filter((_,idx)=>idx!==i));}
+
   function exportPricingCsv(){
-    if(!sku){return;}
-    let csv=`Costing & Pricing Report — ${sku.name} (${sku.sku})\n\n`;
-    csv+=`COST BREAKDOWN\nProcurement Cost,${procurement}\nPackaging,${costs.packaging}\nClosing Fee,${costs.closingFee}\nCOB (Returns+Ads),${costs.cob}\nShipping,${costs.shipping}\nCOGS,${costs.cogs}\nMiscellaneous,${costs.misc}\nTotal Cost,${totalCost.toFixed(2)}\n\n`;
+    if(!hasSelection){return;}
+    const label=planMode==="combo"?comboRows.filter(r=>r.sku).map(r=>`${r.sku} ×${r.qty}`).join(" + "):`${sku.name} (${sku.sku})`;
+    let csv=`Costing & Pricing Report — ${label}\n\n`;
+    csv+=`COST BREAKDOWN\nProcurement Cost,${procurement}\nPackaging,${costs.packaging}\nClosing Fee,${costs.closingFee}\nCOB (Returns+Ads),${costs.cob}\nShipping,${costs.shipping}\nCOGS,${costs.cogs}\nMiscellaneous,${costs.misc}\nGST on Closing Fee + Shipping (18%),${gstOnFees.toFixed(2)}\nTotal Cost,${totalCost.toFixed(2)}\n\n`;
     csv+=`SELLING PRICE\nMargin %,${margin}%\nSelling Price,${sellingPrice.toFixed(2)}\n\n`;
     csv+=`MRP OPTIONS\nDiscount Offered,MRP\n`;
     mrpOptions.forEach(o=>csv+=`${o.discount}%,${o.mrp.toFixed(2)}\n`);
-    downloadCsv(`pricing_${sku.sku}.csv`,csv);
+    downloadCsv(`pricing_${planMode==="combo"?"combo_plan":sku.sku}.csv`,csv);
   }
 
   const costFields=[{key:"packaging",label:"Packaging"},{key:"closingFee",label:"Closing Fee"},{key:"cob",label:"COB (Returns + Ads)"},{key:"shipping",label:"Shipping"},{key:"cogs",label:"COGS"},{key:"misc",label:"Miscellaneous"}];
 
   return(
     <div>
-      <SectionHeader title="Costing & Pricing" subtitle="Calculate selling price and MRP discount tiers for any SKU."/>
+      <SectionHeader title="Costing & Pricing" subtitle="Calculate selling price and MRP discount tiers for any SKU, or plan a new combo from multiple SKUs."/>
 
-      {/* SKU selector */}
+      <div className="flex gap-1.5 mb-4">
+        {[{id:"single",label:"Single SKU"},{id:"combo",label:"Combo Planning"}].map(m=>(
+          <button key={m.id} onClick={()=>setPlanMode(m.id)} className="px-3.5 py-2 rounded-full text-xs font-bold transition-colors" style={{backgroundColor:planMode===m.id?C.zenkyPurple:C.softWhite,color:planMode===m.id?C.softWhite:C.darkText,border:`2px solid ${planMode===m.id?C.zenkyPurple:C.border}`,fontFamily:F.display}}>
+            {m.label}
+          </button>
+        ))}
+      </div>
+
+      {/* Selector */}
       <Card className="mb-5">
-        <label className="text-xs font-bold uppercase block mb-2" style={{color:C.lightText,fontFamily:F.body,letterSpacing:"0.02em"}}>Select SKU</label>
-        <Select value={selectedSku} onChange={e=>setSelectedSku(e.target.value)}>
-          <option value="">Choose a SKU to calculate pricing…</option>
-          {skus.map(s=><option key={s.sku} value={s.sku}>{s.sku} — {s.name} {s.procurementCost?`(₹${s.procurementCost})`:""}</option>)}
-        </Select>
-        {sku&&<p className="text-xs mt-2" style={{color:C.lightText}}>Procurement cost pulled from catalog: <strong style={{color:C.zenkyPurple}}>₹{procurement}</strong></p>}
+        {planMode==="single"?(
+          <>
+            <label className="text-xs font-bold uppercase block mb-2" style={{color:C.lightText,fontFamily:F.body,letterSpacing:"0.02em"}}>Select SKU</label>
+            <SkuSearchPicker skus={skus} value={selectedSku} onChange={setSelectedSku}/>
+            {sku&&<p className="text-xs mt-2" style={{color:C.lightText}}>Procurement cost pulled from catalog: <strong style={{color:C.zenkyPurple}}>₹{sku.procurementCost||0}</strong></p>}
+          </>
+        ):(
+          <>
+            <label className="text-xs font-bold uppercase block mb-2" style={{color:C.lightText,fontFamily:F.body,letterSpacing:"0.02em"}}>Combo Components — SKU + Quantity</label>
+            <div className="space-y-2">
+              {comboRows.map((row,i)=>{
+                const rowSku=skus.find(s=>s.sku===row.sku);
+                return(
+                  <div key={i} className="flex items-center gap-2">
+                    <div className="flex-1"><SkuSearchPicker skus={skus} value={row.sku} onChange={v=>updateComboRow(i,"sku",v)}/></div>
+                    <Input type="number" value={row.qty} onChange={e=>updateComboRow(i,"qty",e.target.value)} className="w-20" placeholder="Qty"/>
+                    <span className="text-xs w-20 text-right" style={{color:C.lightText,fontFamily:F.mono}}>{rowSku?fmtINR(Number(rowSku.procurementCost||0)*(Number(row.qty)||0)):"—"}</span>
+                    <GhostButton title="Remove" onClick={()=>removeComboRow(i)}><X size={14}/></GhostButton>
+                  </div>
+                );
+              })}
+            </div>
+            <button onClick={addComboRow} className="mt-3 inline-flex items-center gap-1 text-xs font-bold" style={{color:C.zenkyPurple}}><Plus size={14}/>Add another SKU</button>
+            {comboProcurement>0&&<p className="text-xs mt-3" style={{color:C.lightText}}>Combined procurement cost: <strong style={{color:C.zenkyPurple}}>{fmtINR(comboProcurement)}</strong></p>}
+          </>
+        )}
       </Card>
 
-      {!selectedSku?<Empty icon={Calculator} title="Select a SKU" message="Choose a SKU above to calculate its costing and pricing."/>:(
+      {!hasSelection?<Empty icon={Calculator} title={planMode==="combo"?"Add components":"Select a SKU"} message={planMode==="combo"?"Add at least one SKU with a quantity to plan combo pricing.":"Choose a SKU above to calculate its costing and pricing."}/>:(
         <div className="grid md:grid-cols-2 gap-5">
 
           {/* Cost breakdown */}
@@ -1642,6 +1728,7 @@ function CostingPricingView({skus}){
               <div className="space-y-3">
                 <CostInput label="Procurement Cost" value={procurement} readOnly prefix="₹"/>
                 {costFields.map(f=><CostInput key={f.key} label={f.label} value={costs[f.key]} onChange={e=>setCosts({...costs,[f.key]:e.target.value})} prefix="₹"/>)}
+                <CostInput label="GST on Closing Fee + Shipping (18%)" value={gstOnFees.toFixed(2)} readOnly prefix="₹"/>
               </div>
               <div className="mt-4 pt-4 border-t flex items-center justify-between" style={{borderColor:C.border}}>
                 <span className="font-bold text-sm" style={{fontFamily:F.display,color:C.darkText}}>Total Cost</span>
@@ -2020,6 +2107,64 @@ function BulkEditTable({skus,combos,channelProfitData,setChannelProfitData,finan
     setRows({...rows,[code]:{...rows[code],[field]:value}});
   }
 
+  // Downloadable template matches exactly what handleExcelUpload expects —
+  // headers are matched case-insensitively so small variations still work.
+  function downloadTemplate(){
+    const headers=["SKU/Combo Code","Selling Price","Shipping Cost","Closing Fee (FBM/manual only)","Packaging Cost"];
+    const sampleCodes=allProducts.slice(0,3).map(p=>p.code);
+    const sample=sampleCodes.length?sampleCodes.map(c=>[c,"","","",""]):[["ZB-EXAMPLE-001","199","25","","10"]];
+    const ws=XLSX.utils.aoa_to_sheet([headers,...sample]);
+    ws["!cols"]=[{wch:22},{wch:14},{wch:14},{wch:26},{wch:14}];
+    const wb=XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb,ws,"Profit Calculator");
+    XLSX.writeFile(wb,`profit_calculator_template_${bulkChannel}.xlsx`);
+  }
+
+  const excelRef=useRef(null);
+  function handleExcelUpload(file){
+    if(!file)return;
+    const ext=file.name.split(".").pop().toLowerCase();
+    if(ext!=="xlsx"&&ext!=="xls"){showToast("error","Upload an .xlsx or .xls file.");return;}
+    const reader=new FileReader();
+    reader.onload=e=>{
+      try{
+        const wb=XLSX.read(e.target.result,{type:"array"});
+        const grid=XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]],{header:1,defval:""});
+        if(!grid.length){showToast("error","File is empty.");return;}
+        const headerRow=grid[0].map(h=>String(h).toLowerCase().trim());
+        const findCol=(...matches)=>headerRow.findIndex(h=>matches.some(m=>h.includes(m)));
+        const codeCol=findCol("sku","code");
+        const priceCol=findCol("selling price","price");
+        const shipCol=findCol("shipping");
+        const closingCol=findCol("closing fee","closing");
+        const packCol=findCol("packaging");
+        if(codeCol<0){showToast("error","Couldn't find a SKU/Combo Code column — check the file matches the template.");return;}
+        const validCodes=new Set(allProducts.map(p=>p.code));
+        const updates={...rows};
+        let matched=0,unmatched=[];
+        grid.slice(1).forEach(r=>{
+          const code=String(r[codeCol]||"").trim();
+          if(!code)return;
+          if(!validCodes.has(code)){unmatched.push(code);return;}
+          matched++;
+          updates[code]={
+            sellingPrice:priceCol>=0&&r[priceCol]!==""?String(r[priceCol]):(updates[code]?.sellingPrice||""),
+            shippingCost:shipCol>=0&&r[shipCol]!==""?String(r[shipCol]):(updates[code]?.shippingCost||""),
+            closingFee:closingCol>=0&&r[closingCol]!==""?String(r[closingCol]):(updates[code]?.closingFee||""),
+            packagingCost:packCol>=0&&r[packCol]!==""?String(r[packCol]):(updates[code]?.packagingCost||""),
+          };
+        });
+        setRows(updates);
+        if(matched>0)showToast("success",`Loaded ${matched} product${matched!==1?"s":""} into the table below — review, then click "Save All".${unmatched.length?` ${unmatched.length} code(s) not found and skipped.`:""}`);
+        else showToast("error",`No matching SKU/Combo codes found in the file.${unmatched.length?` Unrecognized: ${unmatched.slice(0,5).join(", ")}`:""}`);
+      }catch{
+        showToast("error","Could not parse this file — check it matches the template format.");
+      }
+    };
+    reader.readAsArrayBuffer(file);
+    if(excelRef.current)excelRef.current.value="";
+  }
+
   function saveAll(){
     const updated={...channelProfitData};
     let count=0;
@@ -2055,8 +2200,16 @@ function BulkEditTable({skus,combos,channelProfitData,setChannelProfitData,finan
             </button>
           ))}
         </div>
-        <Input placeholder="Search SKU or combo…" value={query} onChange={e=>setQuery(e.target.value)} className="w-56"/>
+        <div className="flex items-center gap-2 flex-wrap">
+          <button onClick={downloadTemplate} className="inline-flex items-center gap-1 text-xs font-bold" style={{color:C.zenkyOrange}}><Download size={13}/>Download Template</button>
+          <input ref={excelRef} type="file" accept=".xlsx,.xls" className="hidden" onChange={e=>handleExcelUpload(e.target.files[0])}/>
+          <button onClick={()=>excelRef.current?.click()} className="px-3 py-1.5 rounded-xl text-xs font-bold border-2" style={{borderColor:C.zenkyPurple,color:C.zenkyPurple,fontFamily:F.display}}><Upload size={13} className="inline mr-1"/>Upload Excel</button>
+          <Input placeholder="Search SKU or combo…" value={query} onChange={e=>setQuery(e.target.value)} className="w-56"/>
+        </div>
       </div>
+      <p className="text-xs mb-4" style={{color:C.lightText}}>
+        Uploading loads matched SKU/Combo codes into the table below for this channel ({bulkChannel.toUpperCase()}) — nothing saves until you review and click "Save All". Unrecognized codes are skipped and reported.
+      </p>
       <Card>
         <div className="overflow-x-auto"><table className="w-full text-sm">
           <thead><tr style={{color:C.lightText}}>
