@@ -191,6 +191,8 @@ function detectExtraColumns(headerKeys){
     cityKey:find(/ship.?city/i),
     stateKey:find(/ship.?state|ship.?region/i),
     priceKey:find(/item.?price|unit.?price|^price$/i),
+    asinKey:find(/^asin$/i),
+    productNameKey:find(/product.?name|item.?name/i),
   };
 }
 
@@ -1151,7 +1153,19 @@ function BulkImportView({skus,combos,setSkus,setCombos,showToast,logActivity}){
   }
   function processFile(file){
     if(!file)return;setFileName(file.name);const ext=file.name.split(".").pop().toLowerCase();
-    if(ext==="csv"){Papa.parse(file,{header:true,skipEmptyLines:true,complete:res=>parseImportData(res.data),error:()=>showToast("error","Could not parse CSV.")});}
+    if(ext==="csv"){
+      Papa.parse(file,{header:true,skipEmptyLines:true,complete:res=>{
+        // A CSV can only ever be ONE table — unlike Excel, it can't have
+        // separate SKUs/Combos sheets. Detect which shape this file is by
+        // its headers, so a combo-only CSV is never silently interpreted as
+        // (and fails as) a SKUs import with combos dropped entirely.
+        const rows=res.data;
+        const headers=rows.length?Object.keys(rows[0]):[];
+        const looksLikeCombos=headers.includes("Combo Code")||headers.includes("Combo Name");
+        if(looksLikeCombos)parseImportData([],rows);
+        else parseImportData(rows,[]);
+      },error:()=>showToast("error","Could not parse CSV.")});
+    }
     else if(ext==="xlsx"||ext==="xls"){const r=new FileReader();r.onload=e=>{try{const wb=XLSX.read(e.target.result,{type:"array"});const ss=wb.Sheets["SKUs"]||wb.Sheets[wb.SheetNames[0]];const cs=wb.Sheets["Combos"];parseImportData(XLSX.utils.sheet_to_json(ss,{defval:""}),cs?XLSX.utils.sheet_to_json(cs,{defval:""}):[]);}catch{showToast("error","Could not parse spreadsheet.");}};r.readAsArrayBuffer(file);}
     else showToast("error","Upload a .csv or .xlsx file.");
   }
@@ -1296,9 +1310,18 @@ function UploadView({skus,combos,setSkus,reports,setReports,salesLines,setSalesL
   },[rawRows,skipDuplicates,duplicateOrderIds]);
 
   const aggregated=useMemo(()=>{
-    const totals={};
-    effectiveRows.forEach(r=>{if(!r.sku||isNaN(r.qty))return;totals[r.sku]=(totals[r.sku]||0)+r.qty;});
-    return Object.entries(totals).map(([code,qty])=>{const combo=combos.find(c=>c.sku===code),sku=skuMap[code];const mt=combo?"combo":sku?"direct":"unknown";return{code,qty,matchType:mt,matchName:combo?.name||sku?.name||"Not in catalog"};});
+    const totals={},fileInfo={};
+    effectiveRows.forEach(r=>{
+      if(!r.sku||isNaN(r.qty))return;
+      totals[r.sku]=(totals[r.sku]||0)+r.qty;
+      if(!fileInfo[r.sku]&&(r.asin||r.productName))fileInfo[r.sku]={asin:r.asin,productName:r.productName};
+    });
+    return Object.entries(totals).map(([code,qty])=>{
+      const combo=combos.find(c=>c.sku===code),sku=skuMap[code];
+      const mt=combo?"combo":sku?"direct":"unknown";
+      const info=fileInfo[code]||{};
+      return{code,qty,matchType:mt,matchName:combo?.name||sku?.name||info.productName||"Not in catalog",asin:info.asin||"",productName:info.productName||""};
+    });
   },[effectiveRows,combos,skuMap]);
 
   function processRows(rows){
@@ -1307,7 +1330,7 @@ function UploadView({skus,combos,setSkus,reports,setReports,salesLines,setSalesL
     if(!sk||!qk){showToast("error",'Expected "sku" and "quantity" columns.');return;}
     const extra=detectExtraColumns(hk);
     setExtraCols(extra);
-    setRawRows(rows.map(r=>({sku:String(r[sk]||"").trim(),qty:parseFloat(r[qk]),date:extra.dateKey?r[extra.dateKey]:null,orderId:extra.orderIdKey?String(r[extra.orderIdKey]||"").trim():"",buyer:extra.buyerKey?String(r[extra.buyerKey]||"").trim():"",city:extra.cityKey?String(r[extra.cityKey]||"").trim():"",state:extra.stateKey?String(r[extra.stateKey]||"").trim():"",price:extra.priceKey?parseFloat(r[extra.priceKey]):null})).filter(r=>r.sku&&!isNaN(r.qty)));
+    setRawRows(rows.map(r=>({sku:String(r[sk]||"").trim(),qty:parseFloat(r[qk]),date:extra.dateKey?r[extra.dateKey]:null,orderId:extra.orderIdKey?String(r[extra.orderIdKey]||"").trim():"",buyer:extra.buyerKey?String(r[extra.buyerKey]||"").trim():"",city:extra.cityKey?String(r[extra.cityKey]||"").trim():"",state:extra.stateKey?String(r[extra.stateKey]||"").trim():"",price:extra.priceKey?parseFloat(r[extra.priceKey]):null,asin:extra.asinKey?String(r[extra.asinKey]||"").trim():"",productName:extra.productNameKey?String(r[extra.productNameKey]||"").trim():""})).filter(r=>r.sku&&!isNaN(r.qty)));
     setStage("parsed");
   }
 
@@ -1368,12 +1391,12 @@ function UploadView({skus,combos,setSkus,reports,setReports,salesLines,setSalesL
     const newLines=effectiveRows.map((row,i)=>{
       const combo=comboMap[row.sku],sku=skuMap[row.sku];
       const matchType=combo?"combo":sku?"direct":"unknown";
-      const name=combo?.name||sku?.name||row.sku;
+      const name=combo?.name||sku?.name||row.productName||row.sku;
       const unitCost=unitCostOf(row.sku,matchType,skuMap,comboMap);
       const shippingCost=shippingPerUnit*row.qty;
       const cost=(unitCost*row.qty)+shippingCost;
       const revenue=row.price!=null&&!isNaN(row.price)?row.price*row.qty:0;
-      return{id:`${reportId}-${i}`,reportId,channel,date:row.date||report.appliedAt,sku:row.sku,name,matchType,qty:row.qty,unitCost,cost,revenue,earning:revenue-cost,orderId:row.orderId||"",buyer:row.buyer||"",city:row.city||"",state:row.state||"",shippingCost};
+      return{id:`${reportId}-${i}`,reportId,channel,date:row.date||report.appliedAt,sku:row.sku,name,matchType,qty:row.qty,unitCost,cost,revenue,earning:revenue-cost,orderId:row.orderId||"",buyer:row.buyer||"",city:row.city||"",state:row.state||"",shippingCost,asin:row.asin||""};
     });
 
     setSkus(newSkus);setReports([report,...reports]);setSalesLines([...salesLines,...newLines]);
@@ -1383,15 +1406,18 @@ function UploadView({skus,combos,setSkus,reports,setReports,salesLines,setSalesL
   function reset(){setStage("idle");setRawRows([]);setFileName("");setWeekLabel("");setRepairNote(null);setSkipDuplicates(true);setBulkShippingCost(financialSettings?.defaultShippingCost||"");if(ref.current)ref.current.value="";}
 
   function downloadWebsiteTemplate(){
-    const csv="sku,quantity,item-price,purchase-date,buyer-name,buyer-email,ship-city,ship-state\n"+
-      "ZB-ST-MBK-002,2,99,2026-07-05T10:30:00,Anita Sharma,anita@example.com,Mumbai,MAHARASHTRA\n"+
-      "COMBO-A,1,499,2026-07-05T14:15:00,Rahul Verma,rahul@example.com,Delhi,DELHI\n";
+    // No ASIN column here — ASIN is an Amazon marketplace identifier and
+    // genuinely doesn't apply to Website orders, unlike Amazon uploads where
+    // it's optional but relevant.
+    const csv="sku,quantity,item-price,purchase-date,buyer-name,buyer-email,ship-city,ship-state,item-name\n"+
+      "ZB-ST-MBK-002,2,99,2026-07-05T10:30:00,Anita Sharma,anita@example.com,Mumbai,MAHARASHTRA,ZenkyBox Magnetic Bookmark Set\n"+
+      "COMBO-A,1,499,2026-07-05T14:15:00,Rahul Verma,rahul@example.com,Delhi,DELHI,ZenkyBox Starter Gift Set\n";
     downloadCsv("website_sales_template.csv",csv);
   }
   function downloadAmazonReference(){
-    const csv="amazon-order-id,sku,quantity,item-price,purchase-date,ship-city,ship-state\n"+
-      "402-6139183-3052307,ZB-ST-MBK-002,1,99,2026-07-05T06:29:52+00:00,PUNE,MAHARASHTRA\n"+
-      "171-7143323-7105914,OE-D495-NPMY,1,499,2026-07-04T18:56:02+00:00,PATNA,BIHAR\n";
+    const csv="amazon-order-id,sku,quantity,item-price,purchase-date,ship-city,ship-state,asin,product-name\n"+
+      "402-6139183-3052307,ZB-ST-MBK-002,1,99,2026-07-05T06:29:52+00:00,PUNE,MAHARASHTRA,B0ABCDE123,ZenkyBox Magnetic Bookmark Set\n"+
+      "171-7143323-7105914,OE-D495-NPMY,1,499,2026-07-04T18:56:02+00:00,PATNA,BIHAR,B0FGHIJ456,ZenkyBox Bear Water Bottle with Keychain Pink 750ml\n";
     downloadCsv("amazon_sales_reference.csv",csv);
   }
 
@@ -1471,7 +1497,7 @@ function UploadView({skus,combos,setSkus,reports,setReports,salesLines,setSalesL
           <div className="text-xs mb-2" style={{color:C.lightText}}>
             {skipDuplicates&&duplicateOrderIds.size>0?`Showing ${aggregated.length} codes from ${effectiveRows.length} order lines (${duplicateOrderIds.size} duplicate orders excluded)`:`${aggregated.length} codes from ${effectiveRows.length} order lines`}
           </div>
-          <div className="overflow-x-auto mb-4"><table className="w-full text-sm"><thead><tr style={{color:C.lightText}}><th className="py-2 pr-3 text-left font-bold text-xs uppercase">Code</th><th className="py-2 pr-3 text-left font-bold text-xs uppercase">Qty</th><th className="py-2 pr-3 text-left font-bold text-xs uppercase">Type</th><th className="py-2 pr-3 text-left font-bold text-xs uppercase">Name</th></tr></thead><tbody>{aggregated.map(a=><tr key={a.code} className="border-t" style={{borderColor:C.border}}><td className="py-2 pr-3" style={{fontFamily:F.mono,fontWeight:600}}>{a.code}</td><td className="py-2 pr-3" style={{fontFamily:F.mono}}>{fmt(a.qty)}</td><td className="py-2 pr-3">{a.matchType==="combo"?<Stamp tone="mint">Combo</Stamp>:a.matchType==="direct"?<Stamp tone="purple">SKU</Stamp>:<Stamp tone="pink">Unknown</Stamp>}</td><td className="py-2 pr-3" style={{color:a.matchType==="unknown"?C.zenkyPink:C.darkText}}>{a.matchName}</td></tr>)}</tbody></table></div>
+          <div className="overflow-x-auto mb-4"><table className="w-full text-sm"><thead><tr style={{color:C.lightText}}><th className="py-2 pr-3 text-left font-bold text-xs uppercase">Code</th><th className="py-2 pr-3 text-left font-bold text-xs uppercase">Qty</th><th className="py-2 pr-3 text-left font-bold text-xs uppercase">Type</th><th className="py-2 pr-3 text-left font-bold text-xs uppercase">Name</th><th className="py-2 pr-3 text-left font-bold text-xs uppercase">ASIN</th></tr></thead><tbody>{aggregated.map(a=><tr key={a.code} className="border-t" style={{borderColor:C.border}}><td className="py-2 pr-3" style={{fontFamily:F.mono,fontWeight:600}}>{a.code}</td><td className="py-2 pr-3" style={{fontFamily:F.mono}}>{fmt(a.qty)}</td><td className="py-2 pr-3">{a.matchType==="combo"?<Stamp tone="mint">Combo</Stamp>:a.matchType==="direct"?<Stamp tone="purple">SKU</Stamp>:<Stamp tone="pink">Unknown</Stamp>}</td><td className="py-2 pr-3" style={{color:a.matchType==="unknown"?C.zenkyPink:C.darkText}}>{a.matchName}</td><td className="py-2 pr-3" style={{fontFamily:F.mono,color:C.lightText}}>{a.asin||"—"}</td></tr>)}</tbody></table></div>
           {channel==="website"&&(
             <div className="mb-4 p-3 rounded-xl" style={{backgroundColor:"#FFF3E6"}}>
               <p className="text-xs font-bold mb-2" style={{color:"#9a5b0f"}}>Required — shipping cost per unit for this batch (applies to every order in this upload):</p>
