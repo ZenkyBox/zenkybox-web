@@ -4533,16 +4533,49 @@ export default function App(){
   // Save whenever data changes — gated on canSave, so a failed initial load
   // can never result in writing an empty catalog over real remote data.
   const saveTimeout=useRef(null);
+  const saveFailNotified=useRef(false);
+  const pendingSavePayload=useRef(null);
+  function flushPendingSave(){
+    if(!pendingSavePayload.current)return;
+    clearTimeout(saveTimeout.current);
+    const payload=pendingSavePayload.current;
+    pendingSavePayload.current=null;
+    saveData(payload)
+      .then(timestamp=>{if(timestamp){lastKnownUpdatedAt.current=timestamp;saveFailNotified.current=false;}})
+      .catch(()=>{
+        if(!saveFailNotified.current){
+          saveFailNotified.current=true;
+          showToast("error","Couldn't sync your changes to the server — check your internet connection. Changes are only saved on this device until this succeeds.");
+        }
+      });
+  }
   useEffect(()=>{
     if(!loaded||!canSave)return;
     clearTimeout(saveTimeout.current);
-    saveTimeout.current=setTimeout(()=>{
-      saveData({skus,combos,reports,salesLines,activityLog,adminPin,loginCreds,users,investors,investments,expenses,income,financialSettings,channelProfitData})
-        .then(timestamp=>{if(timestamp)lastKnownUpdatedAt.current=timestamp;})
-        .catch(()=>{});
-    },500);
+    const payload={skus,combos,reports,salesLines,activityLog,adminPin,loginCreds,users,investors,investments,expenses,income,financialSettings,channelProfitData};
+    pendingSavePayload.current=payload;
+    // Shortened from 500ms — still batches rapid changes like typing, but
+    // narrows the window where a fast refresh could cancel an unsaved change.
+    saveTimeout.current=setTimeout(flushPendingSave,200);
     return()=>clearTimeout(saveTimeout.current);
   },[skus,combos,reports,salesLines,activityLog,adminPin,loginCreds,users,investors,investments,expenses,income,financialSettings,channelProfitData,loaded,canSave]);
+
+  // Flush any pending debounced save the moment the tab is hidden/closed or
+  // the page is about to unload — a refresh or tab-close right after an
+  // action (before the 200ms debounce fires) would otherwise cancel the save
+  // outright, losing a change that already showed a "Saved" toast.
+  useEffect(()=>{
+    function onHide(){flushPendingSave();}
+    function onVisibility(){if(document.visibilityState==="hidden")onHide();}
+    document.addEventListener("visibilitychange",onVisibility);
+    window.addEventListener("pagehide",onHide);
+    window.addEventListener("beforeunload",onHide);
+    return()=>{
+      document.removeEventListener("visibilitychange",onVisibility);
+      window.removeEventListener("pagehide",onHide);
+      window.removeEventListener("beforeunload",onHide);
+    };
+  },[]);
 
   // For destructive/corrective actions (Flush, Cleanup, Clear All, Replace All) —
   // caller supplies the COMPLETE new payload explicitly (not read from state,
@@ -4552,7 +4585,9 @@ export default function App(){
   // a flush/cleanup's result reaches the database.
   function forceSaveNow(payload){
     clearTimeout(saveTimeout.current);
-    saveData(payload).then(timestamp=>{if(timestamp)lastKnownUpdatedAt.current=timestamp;}).catch(()=>{});
+    saveData(payload).then(timestamp=>{if(timestamp)lastKnownUpdatedAt.current=timestamp;}).catch(()=>{
+      showToast("error","Couldn't sync to the server — your change is saved on this device but may not appear elsewhere until this succeeds. Check your connection and try again.");
+    });
   }
 
   function retryLoad(){
