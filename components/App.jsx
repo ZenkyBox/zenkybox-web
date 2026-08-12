@@ -3415,6 +3415,12 @@ function FinancialsView({investors,setInvestors,investments,setInvestments,expen
       const amount=Number(form.amount);
       if(!form.head){showToast("error","Choose an expense head.");return;}
       if(!amount||amount<=0){showToast("error","Enter a valid amount.");return;}
+      // "Spent By" means an investor personally fronted the cash — logically
+      // incompatible with "Fund Source: Business Revenue," which means
+      // company cash paid for it. Having both set auto-credits an investment
+      // that was never actually the investor's own money (found and fixed
+      // for 7 existing transactions worth ₹9,987 across 2 investors).
+      if(form.spentBy&&form.fundedBy==="revenue"){showToast("error",'"Spent By" and "Fund Source: Business Revenue" can\'t both be set — if revenue paid for it, no investor personally fronted the cash.');return;}
       const spentByInvestor=investors.find(i=>i.id===form.spentBy);
       const e={id:Date.now().toString(),date:form.date,head:form.head,amount,spentBy:form.spentBy,spentByName:spentByInvestor?.name||"",fundedBy:form.fundedBy,fundedByName:fundedByLabel(form.fundedBy),paidTo:form.paidTo.trim(),paymentMode:form.paymentMode,comment:form.comment.trim()};
       setExpenses([...expenses,e]);
@@ -3435,6 +3441,7 @@ function FinancialsView({investors,setInvestors,investments,setInvestments,expen
       const amount=Number(editValues.amount);
       if(!editValues.head){showToast("error","Choose an expense head.");return;}
       if(!amount||amount<=0){showToast("error","Enter a valid amount.");return;}
+      if(editValues.spentBy&&editValues.fundedBy==="revenue"){showToast("error",'"Spent By" and "Fund Source: Business Revenue" can\'t both be set — if revenue paid for it, no investor personally fronted the cash.');return;}
       const spentByInvestor=investors.find(i=>i.id===editValues.spentBy);
       setExpenses(expenses.map(e=>e.id===id?{...e,date:editValues.date,head:editValues.head,amount,spentBy:editValues.spentBy,spentByName:spentByInvestor?.name||"",fundedBy:editValues.fundedBy,fundedByName:fundedByLabel(editValues.fundedBy),paidTo:editValues.paidTo,paymentMode:editValues.paymentMode,comment:editValues.comment}:e));
       // Reconcile the linked investment: drop any previous auto-entry for this
@@ -3597,7 +3604,7 @@ function FinancialsView({investors,setInvestors,investments,setInvestments,expen
             <div className="relative"><span className="absolute left-3 top-2.5 text-sm" style={{color:C.lightText}}>₹</span><Input placeholder="Amount" type="number" className="pl-6" value={form.amount} onChange={e=>setForm({...form,amount:e.target.value})}/></div>
           </div>
           <div className="grid sm:grid-cols-3 gap-2 mb-2">
-            <Select value={form.spentBy} onChange={e=>setForm({...form,spentBy:e.target.value})}>
+            <Select value={form.spentBy} onChange={e=>setForm({...form,spentBy:e.target.value,fundedBy:e.target.value&&form.fundedBy==="revenue"?"":form.fundedBy})}>
               <option value="">Spent by (accountability)…</option>
               {investors.map(i=><option key={i.id} value={i.id}>{i.name}</option>)}
             </Select>
@@ -3608,12 +3615,12 @@ function FinancialsView({investors,setInvestors,investments,setInvestments,expen
             </Select>
           </div>
           <div className="mb-2">
-            <Select value={form.fundedBy} onChange={e=>setForm({...form,fundedBy:e.target.value})}>
+            <Select value={form.fundedBy} onChange={e=>setForm({...form,fundedBy:e.target.value,spentBy:e.target.value==="revenue"?"":form.spentBy})}>
               <option value="">Fund source: not tracked…</option>
               {investors.map(i=><option key={i.id} value={i.id}>Use {i.name}'s invested fund</option>)}
               <option value="revenue">Use business revenue/profit</option>
             </Select>
-            <p className="text-xs mt-1" style={{color:C.lightText}}>Optional — different from "Spent by." This tracks whose pooled capital the money came <em>from</em>, so you can see each investor's remaining available balance. Doesn't create a new investment credit.</p>
+            <p className="text-xs mt-1" style={{color:C.lightText}}>Optional — different from "Spent by." This tracks whose pooled capital the money came <em>from</em>, so you can see each investor's remaining available balance. Doesn't create a new investment credit. Mutually exclusive with "Spent by" — selecting "business revenue" here means no investor personally fronted the cash, so it clears that field.</p>
           </div>
           <div className="mb-3">
             <Input placeholder="Comment (optional)" value={form.comment} onChange={e=>setForm({...form,comment:e.target.value})}/>
@@ -3637,8 +3644,8 @@ function FinancialsView({investors,setInvestors,investments,setInvestments,expen
                     <td className="py-2 pr-3" style={{fontFamily:F.mono,color:C.lightText}}>{isEdit?<Input type="date" value={editValues.date} onChange={ev=>setEditValues({...editValues,date:ev.target.value})}/>:e.date}</td>
                     <td className="py-2 pr-3">{isEdit?<Select value={editValues.head} onChange={ev=>setEditValues({...editValues,head:ev.target.value})}>{EXPENSE_HEADS.map(h=><option key={h} value={h}>{h}</option>)}</Select>:<Stamp tone="orange">{e.head}</Stamp>}</td>
                     <td className="py-2 pr-3 font-bold" style={{fontFamily:F.mono,color:C.zenkyOrange}}>{isEdit?<Input type="number" value={editValues.amount} onChange={ev=>setEditValues({...editValues,amount:ev.target.value})}/>:fmtINR(e.amount)}</td>
-                    <td className="py-2 pr-3">{isEdit?<Select value={editValues.spentBy} onChange={ev=>setEditValues({...editValues,spentBy:ev.target.value})}><option value="">—</option>{investors.map(i=><option key={i.id} value={i.id}>{i.name}</option>)}</Select>:(e.spentByName?<Stamp tone="purple">{e.spentByName}</Stamp>:"—")}</td>
-                    <td className="py-2 pr-3">{isEdit?<Select value={editValues.fundedBy} onChange={ev=>setEditValues({...editValues,fundedBy:ev.target.value})}><option value="">—</option>{investors.map(i=><option key={i.id} value={i.id}>{i.name}</option>)}<option value="revenue">Revenue</option></Select>:(e.fundedByName?<Stamp tone="mint">{e.fundedByName}</Stamp>:"—")}</td>
+                    <td className="py-2 pr-3">{isEdit?<Select value={editValues.spentBy} onChange={ev=>setEditValues({...editValues,spentBy:ev.target.value,fundedBy:ev.target.value&&editValues.fundedBy==="revenue"?"":editValues.fundedBy})}><option value="">—</option>{investors.map(i=><option key={i.id} value={i.id}>{i.name}</option>)}</Select>:(e.spentByName?<Stamp tone="purple">{e.spentByName}</Stamp>:"—")}</td>
+                    <td className="py-2 pr-3">{isEdit?<Select value={editValues.fundedBy} onChange={ev=>setEditValues({...editValues,fundedBy:ev.target.value,spentBy:ev.target.value==="revenue"?"":editValues.spentBy})}><option value="">—</option>{investors.map(i=><option key={i.id} value={i.id}>{i.name}</option>)}<option value="revenue">Revenue</option></Select>:(e.fundedByName?<Stamp tone="mint">{e.fundedByName}</Stamp>:"—")}</td>
                     <td className="py-2 pr-3">{isEdit?<Input value={editValues.paidTo} onChange={ev=>setEditValues({...editValues,paidTo:ev.target.value})}/>:(e.paidTo||"—")}</td>
                     <td className="py-2 pr-3">{isEdit?<Select value={editValues.paymentMode} onChange={ev=>setEditValues({...editValues,paymentMode:ev.target.value})}><option value="">—</option>{PAYMENT_MODES.map(m=><option key={m} value={m}>{m}</option>)}</Select>:(e.paymentMode?<Stamp tone="blue">{e.paymentMode}</Stamp>:"—")}</td>
                     <td className="py-2 pr-3" style={{color:C.lightText}}>{isEdit?<Input value={editValues.comment} onChange={ev=>setEditValues({...editValues,comment:ev.target.value})}/>:(e.comment||"—")}</td>
@@ -3877,6 +3884,7 @@ function FinancialsView({investors,setInvestors,investments,setInvestments,expen
       {id:"fy",label:"Financial Year"},
       {id:"investorwise",label:"Investor-wise"},
       {id:"monthly",label:"Monthly"},
+      {id:"revenuespend",label:"Business Revenue Spend"},
     ];
 
     // ── Shared: product/combo revenue+COGS, sourced from Sales Report data (salesLines) ──
@@ -4293,6 +4301,70 @@ function FinancialsView({investors,setInvestors,investments,setInvestments,expen
       );
     }
 
+    // Expenses paid directly from business revenue/profit, not from any
+    // investor's personal capital — built after finding 7 expenses had
+    // "Spent By" wrongly set alongside "Fund Source: Business Revenue"
+    // (v9.2), auto-crediting investors for money that was actually the
+    // company's own. This report is the clean, correctly-scoped view: every
+    // rupee here has fundedBy==="revenue" and nothing else.
+    function RevenueSpendView(){
+      const revenueExpenses=useMemo(()=>expenses.filter(e=>e.fundedBy==="revenue").sort((a,b)=>new Date(b.date)-new Date(a.date)),[]);
+      const totalRevenueSpend=useMemo(()=>revenueExpenses.reduce((s,e)=>s+Number(e.amount||0),0),[revenueExpenses]);
+      const byHead=useMemo(()=>{
+        const m={};
+        revenueExpenses.forEach(e=>{m[e.head]=(m[e.head]||0)+Number(e.amount||0);});
+        return Object.entries(m).map(([head,amount])=>({head,amount})).sort((a,b)=>b.amount-a.amount);
+      },[revenueExpenses]);
+      const totalIncome=useMemo(()=>income.reduce((s,i)=>s+Number(i.amount||0),0),[]);
+      const pctOfRevenue=totalIncome>0?(totalRevenueSpend/totalIncome)*100:0;
+
+      const headExport={headers:["Expense Head","Total Spent"],rows:byHead.map(h=>[h.head,h.amount.toFixed(2)])};
+      const detailExport={headers:["Date","Head","Amount","Spent By","Paid To","Payment Mode","Comment"],rows:revenueExpenses.map(e=>[e.date,e.head,e.amount,e.spentByName||"—",e.paidTo||"",e.paymentMode||"",e.comment||""])};
+
+      if(!revenueExpenses.length)return<Empty icon={IndianRupee} title="No revenue-funded expenses yet" message='Expenses show up here once "Fund Source" is set to Business Revenue.'/>;
+
+      return(
+        <div>
+          <div className="grid sm:grid-cols-3 gap-4 mb-6">
+            <Card><div className="text-xs font-bold uppercase" style={{color:C.lightText}}>Total Spent From Revenue</div><div className="text-2xl font-black mt-1" style={{fontFamily:F.display,color:C.zenkyOrange}}>{fmtINR(totalRevenueSpend)}</div></Card>
+            <Card><div className="text-xs font-bold uppercase" style={{color:C.lightText}}># Transactions</div><div className="text-2xl font-black mt-1" style={{fontFamily:F.display,color:C.darkText}}>{revenueExpenses.length}</div></Card>
+            <Card><div className="text-xs font-bold uppercase" style={{color:C.lightText}}>% of Total Income</div><div className="text-2xl font-black mt-1" style={{fontFamily:F.display,color:C.zenkyPurple}}>{totalIncome>0?`${pctOfRevenue.toFixed(1)}%`:"—"}</div></Card>
+          </div>
+
+          <Card className="mb-6">
+            <div className="flex items-center justify-between mb-3"><h3 className="font-bold text-lg" style={{fontFamily:F.display,color:C.darkText}}>By Expense Head</h3><ExportMenu title="Business_Revenue_Spend_By_Head" {...headExport}/></div>
+            <div className="overflow-x-auto"><table className="w-full text-sm">
+              <thead><tr style={{color:C.lightText}}><th className="py-2 pr-3 text-left text-xs uppercase font-bold">Head</th><th className="py-2 pr-3 text-left text-xs uppercase font-bold">Total Spent</th><th className="py-2 pr-3 text-left text-xs uppercase font-bold">% of Revenue Spend</th></tr></thead>
+              <tbody>{byHead.map(h=>(
+                <tr key={h.head} className="border-t" style={{borderColor:C.border}}>
+                  <td className="py-2 pr-3 font-bold">{h.head}</td>
+                  <td className="py-2 pr-3" style={{fontFamily:F.mono,color:C.zenkyOrange}}>{fmtINR(h.amount)}</td>
+                  <td className="py-2 pr-3" style={{fontFamily:F.mono,color:C.lightText}}>{((h.amount/totalRevenueSpend)*100).toFixed(1)}%</td>
+                </tr>
+              ))}</tbody>
+            </table></div>
+          </Card>
+
+          <Card>
+            <div className="flex items-center justify-between mb-3"><h3 className="font-bold text-lg" style={{fontFamily:F.display,color:C.darkText}}>Transaction Detail</h3><ExportMenu title="Business_Revenue_Spend_Detail" {...detailExport}/></div>
+            <div className="overflow-x-auto"><table className="w-full text-sm">
+              <thead><tr style={{color:C.lightText}}><th className="py-2 pr-3 text-left text-xs uppercase font-bold">Date</th><th className="py-2 pr-3 text-left text-xs uppercase font-bold">Head</th><th className="py-2 pr-3 text-left text-xs uppercase font-bold">Amount</th><th className="py-2 pr-3 text-left text-xs uppercase font-bold hidden sm:table-cell">Paid To</th><th className="py-2 pr-3 text-left text-xs uppercase font-bold hidden sm:table-cell">Mode</th><th className="py-2 pr-3 text-left text-xs uppercase font-bold hidden sm:table-cell">Comment</th></tr></thead>
+              <tbody>{revenueExpenses.map(e=>(
+                <tr key={e.id} className="border-t" style={{borderColor:C.border}}>
+                  <td className="py-2 pr-3" style={{fontFamily:F.mono,color:C.lightText}}>{e.date}</td>
+                  <td className="py-2 pr-3">{e.head}</td>
+                  <td className="py-2 pr-3 font-bold" style={{fontFamily:F.mono,color:C.zenkyOrange}}>{fmtINR(e.amount)}</td>
+                  <td className="py-2 pr-3 hidden sm:table-cell" style={{color:C.lightText}}>{e.paidTo||"—"}</td>
+                  <td className="py-2 pr-3 hidden sm:table-cell">{e.paymentMode?<Stamp tone="blue">{e.paymentMode}</Stamp>:"—"}</td>
+                  <td className="py-2 pr-3 hidden sm:table-cell" style={{color:C.lightText}}>{e.comment||"—"}</td>
+                </tr>
+              ))}</tbody>
+            </table></div>
+          </Card>
+        </div>
+      );
+    }
+
     return(
       <div>
         <div className="flex gap-1.5 mb-6 overflow-x-auto pb-1">
@@ -4307,6 +4379,7 @@ function FinancialsView({investors,setInvestors,investments,setInvestments,expen
         {reportTab==="fy"&&<FinancialYearView/>}
         {reportTab==="investorwise"&&<InvestorWiseView/>}
         {reportTab==="monthly"&&<MonthlyView/>}
+        {reportTab==="revenuespend"&&<RevenueSpendView/>}
       </div>
     );
   }
