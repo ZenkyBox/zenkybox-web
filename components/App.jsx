@@ -1291,6 +1291,7 @@ function UploadView({skus,combos,setSkus,reports,setReports,salesLines,setSalesL
   const [skipDuplicates,setSkipDuplicates]=useState(true);
   const [bulkShippingCost,setBulkShippingCost]=useState(financialSettings?.defaultShippingCost||"");
   const [weekLabel,setWeekLabel]=useState("");const ref=useRef(null);
+  const [ackUnmatched,setAckUnmatched]=useState(false);
   const skuMap=useMemo(()=>Object.fromEntries(skus.map(s=>[s.sku,s])),[skus]);
   const comboMap=useMemo(()=>Object.fromEntries(combos.map(c=>[c.sku,c])),[combos]);
 
@@ -1403,7 +1404,7 @@ function UploadView({skus,combos,setSkus,reports,setReports,salesLines,setSalesL
     logActivity?.("Sales report applied",`[${channel}] "${weekLabel.trim()}" — ${fileName} (${aggregated.length} codes, ${newLines.length} order lines${skippedCount?`, ${skippedCount} duplicate orders skipped`:""}${channel==="website"?`, shipping ${fmtINR(shippingPerUnit)}/unit`:""})`);
     setStage("applied");showToast("success",skippedCount?`Inventory updated — ${skippedCount} duplicate order(s) skipped. 📊`:"Inventory updated. 📊");
   }
-  function reset(){setStage("idle");setRawRows([]);setFileName("");setWeekLabel("");setRepairNote(null);setSkipDuplicates(true);setBulkShippingCost(financialSettings?.defaultShippingCost||"");if(ref.current)ref.current.value="";}
+  function reset(){setStage("idle");setRawRows([]);setFileName("");setWeekLabel("");setRepairNote(null);setSkipDuplicates(true);setBulkShippingCost(financialSettings?.defaultShippingCost||"");setAckUnmatched(false);if(ref.current)ref.current.value="";}
 
   function downloadWebsiteTemplate(){
     // No ASIN column here — ASIN is an Amazon marketplace identifier and
@@ -1505,7 +1506,17 @@ function UploadView({skus,combos,setSkus,reports,setReports,salesLines,setSalesL
               <p className="text-xs mt-2" style={{color:"#9a5b0f"}}>Pre-filled from Financials → Channel Cost Settings. If costs vary a lot per order, consider uploading in smaller batches by cost tier, or adjust individual figures later via the Profit Calculator.</p>
             </div>
           )}
-          <div className="flex items-end gap-3 flex-wrap"><div className="w-full sm:w-64"><label className="text-xs font-bold block mb-1" style={{color:C.lightText}}>Report label</label><Input placeholder="e.g. Week of Jun 16–22" value={weekLabel} onChange={e=>setWeekLabel(e.target.value)}/></div><PrimaryButton onClick={applyReport}><Check size={15}/>Apply to inventory</PrimaryButton></div></div>)}
+          {(()=>{const unmatchedCount=aggregated.filter(a=>a.matchType==="unknown").length;return unmatchedCount>0&&(
+            <div className="mb-4 p-3 rounded-xl" style={{backgroundColor:"#FFE9F2"}}>
+              <p className="text-xs font-bold flex items-center gap-1.5" style={{color:C.zenkyPink}}><AlertTriangle size={14}/>{unmatchedCount} code{unmatchedCount!==1?"s are":" is"} not in your catalog</p>
+              <p className="text-xs mt-1" style={{color:"#9a1f52"}}>These will be recorded with ₹0 product cost, overstating profit for that revenue. Add the missing SKU(s)/combo(s) in Catalog first if you can — or check below to apply anyway and fix the cost later.</p>
+              <label className="flex items-center gap-2 mt-2 text-xs font-bold cursor-pointer" style={{color:"#9a1f52"}}>
+                <input type="checkbox" checked={ackUnmatched} onChange={e=>setAckUnmatched(e.target.checked)}/>
+                I understand — apply anyway, {unmatchedCount} line{unmatchedCount!==1?"s":""} will show ₹0 cost until fixed
+              </label>
+            </div>
+          );})()}
+          <div className="flex items-end gap-3 flex-wrap"><div className="w-full sm:w-64"><label className="text-xs font-bold block mb-1" style={{color:C.lightText}}>Report label</label><Input placeholder="e.g. Week of Jun 16–22" value={weekLabel} onChange={e=>setWeekLabel(e.target.value)}/></div><PrimaryButton onClick={applyReport} disabled={aggregated.filter(a=>a.matchType==="unknown").length>0&&!ackUnmatched}><Check size={15}/>Apply to inventory</PrimaryButton></div></div>)}
         {stage==="applied"&&(<div className="text-center py-8"><Check size={32} className="mx-auto mb-3" style={{color:C.mintGreen}}/><p className="font-bold text-lg" style={{color:C.darkText,fontFamily:F.display}}>Report applied</p><p className="text-sm mt-1" style={{color:C.lightText}}>View breakdown in Reports tab, or full analytics in ZenkyBox Sales Report.</p><div className="mt-5"><PrimaryButton onClick={reset}><Upload size={15}/>Upload another</PrimaryButton></div></div>)}
       </Card>
       )}
@@ -3130,6 +3141,48 @@ function FinancialsView({investors,setInvestors,investments,setInvestments,expen
   const totalExpenses=useMemo(()=>expenses.reduce((s,e)=>s+Number(e.amount||0),0),[expenses]);
   const fundBalance=totalInvested+totalIncome-totalExpenses;
 
+  /* ── Data Health Check ── */
+  const healthChecks=useMemo(()=>{
+    const checks=[];
+    const unmatchedLines=salesLines.filter(l=>l.matchType==="unknown");
+    if(unmatchedLines.length>0){
+      const rev=unmatchedLines.reduce((s,l)=>s+Number(l.revenue||0),0);
+      checks.push({severity:"high",label:`${unmatchedLines.length} sale${unmatchedLines.length!==1?"s":""} recorded with ₹0 cost (SKU not in catalog)`,detail:`${fmtINR(rev)} in revenue has no matching product cost — profit is overstated by up to that amount. Add the missing SKU(s)/combo(s) in the Catalog tab, or edit these lines in Source Data → Sales Records.`});
+    }
+    const zeroCostMatched=salesLines.filter(l=>l.matchType!=="unknown"&&Number(l.unitCost||0)===0&&Number(l.qty||0)>0);
+    if(zeroCostMatched.length>0){
+      checks.push({severity:"medium",label:`${zeroCostMatched.length} sale${zeroCostMatched.length!==1?"s":""} matched to a catalog item with ₹0 procurement cost`,detail:"The SKU/combo exists but its cost is set to 0 — likely never filled in. Update procurement cost in the Catalog tab."});
+    }
+    const blankSettings=["gatewayFeeFixed","gatewayFeePercent","defaultShippingCost","defaultPackagingCost"].filter(k=>!financialSettings?.[k]&&financialSettings?.[k]!==0);
+    if(blankSettings.length>0){
+      checks.push({severity:"low",label:`${blankSettings.length} default fee setting${blankSettings.length!==1?"s":""} not configured`,detail:"Blank defaults in Channel Cost Settings above can cause fee calculations to silently use 0 for products missing their own values."});
+    }
+    return checks;
+  },[salesLines,financialSettings]);
+
+  function DataHealthCard(){
+    if(healthChecks.length===0)return(
+      <Card className="mb-6" style={{borderColor:C.mintGreen}}>
+        <div className="flex items-center gap-2"><ShieldCheck size={18} style={{color:C.mintGreen}}/><h3 className="font-bold" style={{fontFamily:F.display,color:C.darkText}}>Data Health Check — all clear</h3></div>
+        <p className="text-xs mt-1" style={{color:C.lightText}}>No unmatched sales, zero-cost catalog items, or missing fee defaults detected.</p>
+      </Card>
+    );
+    const tone=c=>c==="high"?C.zenkyPink:c==="medium"?C.zenkyOrange:C.lightText;
+    return(
+      <Card className="mb-6" style={{borderColor:C.zenkyPink}}>
+        <div className="flex items-center gap-2 mb-3"><AlertTriangle size={18} style={{color:C.zenkyPink}}/><h3 className="font-bold" style={{fontFamily:F.display,color:C.darkText}}>Data Health Check — {healthChecks.length} issue{healthChecks.length!==1?"s":""} found</h3></div>
+        <div className="space-y-3">
+          {healthChecks.map((c,i)=>(
+            <div key={i} className="p-3 rounded-xl" style={{backgroundColor:C.bgLight}}>
+              <div className="text-sm font-bold" style={{color:tone(c.severity)}}>{c.label}</div>
+              <div className="text-xs mt-1" style={{color:C.lightText}}>{c.detail}</div>
+            </div>
+          ))}
+        </div>
+      </Card>
+    );
+  }
+
   /* ── Overview ── */
   function Overview(){
     const recent=useMemo(()=>{
@@ -3176,6 +3229,7 @@ function FinancialsView({investors,setInvestors,investments,setInvestments,expen
             <span>Of the above, <strong style={{color:C.darkText}}>{fmtINR(revenueUtilized)}</strong> in expenses were funded directly from business revenue/profit rather than investor capital.</span>
           </div>
         )}
+        <DataHealthCard/>
         <Card>
           <h3 className="font-bold text-lg mb-4" style={{fontFamily:F.display,color:C.darkText}}>Recent Activity</h3>
           {recent.length===0?<Empty icon={IndianRupee} title="No financial activity yet" message="Add investors, income, or expenses to see them here."/>:(
