@@ -3200,7 +3200,7 @@ function FinancialsView({investors,setInvestors,investments,setInvestments,expen
   /* ── Investors ── */
   function Investors(){
     const [invForm,setInvForm]=useState({name:"",contact:"",notes:""});
-    const [txForm,setTxForm]=useState({investorId:"",amount:"",date:new Date().toISOString().slice(0,10),paymentMode:"",comment:""});
+    const [txForm,setTxForm]=useState({investorId:"",amount:"",type:"investment",date:new Date().toISOString().slice(0,10),paymentMode:"",comment:""});
     const [editInvId,setEditInvId]=useState(null);
     const [editInvValues,setEditInvValues]=useState({});
     const [deleteInvId,setDeleteInvId]=useState(null);
@@ -3241,19 +3241,28 @@ function FinancialsView({investors,setInvestors,investments,setInvestments,expen
 
     function addInvestment(){
       const investor=investors.find(i=>i.id===txForm.investorId);
-      const amount=Number(txForm.amount);
+      const rawAmount=Number(txForm.amount);
       if(!investor){showToast("error","Choose an investor.");return;}
-      if(!amount||amount<=0){showToast("error","Enter a valid amount.");return;}
-      const tx={id:Date.now().toString(),investorId:investor.id,investorName:investor.name,amount,date:txForm.date,paymentMode:txForm.paymentMode,comment:txForm.comment.trim()};
+      if(!rawAmount||rawAmount<=0){showToast("error","Enter a valid amount.");return;}
+      // Repayments are stored as negative amounts so they net naturally
+      // against Total Invested (same sum used everywhere already) — this is
+      // for when the business pays an investor back money they'd fronted or
+      // invested, so their outstanding balance correctly reduces rather than
+      // the repaid amount silently sitting there as if still invested.
+      const isRepayment=txForm.type==="repayment";
+      const amount=isRepayment?-rawAmount:rawAmount;
+      const tx={id:Date.now().toString(),investorId:investor.id,investorName:investor.name,amount,type:txForm.type,date:txForm.date,paymentMode:txForm.paymentMode,comment:txForm.comment.trim()};
       setInvestments([...investments,tx]);
-      logActivity?.("Investment logged",`${investor.name} — ${fmtINR(amount)}`);
-      showToast("success",`Logged ${fmtINR(amount)} from ${investor.name}. ✨`);
-      setTxForm({investorId:"",amount:"",date:txForm.date,paymentMode:"",comment:""});
+      logActivity?.(isRepayment?"Repayment logged":"Investment logged",`${investor.name} — ${fmtINR(rawAmount)}`);
+      showToast("success",isRepayment?`Logged repayment of ${fmtINR(rawAmount)} to ${investor.name}. ✨`:`Logged ${fmtINR(rawAmount)} from ${investor.name}. ✨`);
+      setTxForm({investorId:"",amount:"",type:"investment",date:txForm.date,paymentMode:"",comment:""});
     }
     function saveTxEdit(id){
-      const amount=Number(editTxValues.amount);
-      if(!amount||amount<=0){showToast("error","Enter a valid amount.");return;}
-      setInvestments(investments.map(t=>t.id===id?{...t,amount,date:editTxValues.date,paymentMode:editTxValues.paymentMode,comment:editTxValues.comment}:t));
+      const rawAmount=Number(editTxValues.amount);
+      if(!rawAmount||rawAmount<=0){showToast("error","Enter a valid amount.");return;}
+      const isRepayment=editTxValues.type==="repayment";
+      const amount=isRepayment?-rawAmount:rawAmount;
+      setInvestments(investments.map(t=>t.id===id?{...t,amount,type:editTxValues.type,date:editTxValues.date,paymentMode:editTxValues.paymentMode,comment:editTxValues.comment}:t));
       logActivity?.("Investment edited",id);
       showToast("success","Saved. ✨");
       setEditTxId(null);
@@ -3314,9 +3323,16 @@ function FinancialsView({investors,setInvestors,investments,setInvestments,expen
         </Card>
 
         <Card>
-          <h3 className="font-bold text-lg mb-4" style={{fontFamily:F.display,color:C.darkText}}>Log an Investment</h3>
+          <h3 className="font-bold text-lg mb-4" style={{fontFamily:F.display,color:C.darkText}}>Log an Investment or Repayment</h3>
           {investors.length===0?<p className="text-sm" style={{color:C.lightText}}>Add an investor above first.</p>:(
             <>
+              <div className="flex gap-1.5 mb-3">
+                {[{id:"investment",label:"Investment (money in)"},{id:"repayment",label:"Repayment (money back to investor)"}].map(m=>(
+                  <button key={m.id} onClick={()=>setTxForm({...txForm,type:m.id})} className="px-3.5 py-1.5 rounded-full text-xs font-bold transition-colors" style={{backgroundColor:txForm.type===m.id?(m.id==="repayment"?C.zenkyPink:C.zenkyPurple):C.bgLight,color:txForm.type===m.id?C.softWhite:C.lightText,fontFamily:F.body}}>
+                    {m.label}
+                  </button>
+                ))}
+              </div>
               <div className="grid sm:grid-cols-3 gap-2 mb-2">
                 <Select value={txForm.investorId} onChange={e=>setTxForm({...txForm,investorId:e.target.value})}>
                   <option value="">Select investor…</option>
@@ -3332,7 +3348,7 @@ function FinancialsView({investors,setInvestors,investments,setInvestments,expen
                 </Select>
                 <Input placeholder="Comment (optional)" value={txForm.comment} onChange={e=>setTxForm({...txForm,comment:e.target.value})}/>
               </div>
-              <PrimaryButton onClick={addInvestment}><Plus size={16}/>Log Investment</PrimaryButton>
+              <PrimaryButton onClick={addInvestment}><Plus size={16}/>{txForm.type==="repayment"?"Log Repayment":"Log Investment"}</PrimaryButton>
             </>
           )}
           {investments.length>0&&(
@@ -3341,11 +3357,19 @@ function FinancialsView({investors,setInvestors,investments,setInvestments,expen
               <tbody>{[...investments].sort((a,b)=>new Date(b.date)-new Date(a.date)).map(t=>{
                 const isEdit=editTxId===t.id;
                 const isLinked=!!t.fromExpenseId;
+                const isRepayment=Number(t.amount)<0;
                 return(
                   <tr key={t.id} className="border-t" style={{borderColor:C.border}}>
                     <td className="py-2 pr-3" style={{fontFamily:F.mono,color:C.lightText}}>{isEdit?<Input type="date" value={editTxValues.date} onChange={e=>setEditTxValues({...editTxValues,date:e.target.value})}/>:t.date}</td>
                     <td className="py-2 pr-3 font-bold">{t.investorName}</td>
-                    <td className="py-2 pr-3 font-bold" style={{fontFamily:F.mono,color:C.zenkyPurple}}>{isEdit?<Input type="number" value={editTxValues.amount} onChange={e=>setEditTxValues({...editTxValues,amount:e.target.value})}/>:fmtINR(t.amount)}</td>
+                    <td className="py-2 pr-3 font-bold" style={{fontFamily:F.mono,color:isRepayment?C.zenkyPink:C.zenkyPurple}}>
+                      {isEdit?(
+                        <div className="flex items-center gap-2">
+                          <Select value={editTxValues.type} onChange={e=>setEditTxValues({...editTxValues,type:e.target.value})} className="w-32"><option value="investment">Investment</option><option value="repayment">Repayment</option></Select>
+                          <Input type="number" value={editTxValues.amount} onChange={e=>setEditTxValues({...editTxValues,amount:e.target.value})}/>
+                        </div>
+                      ):(isRepayment?`− ${fmtINR(Math.abs(t.amount))} (Repayment)`:fmtINR(t.amount))}
+                    </td>
                     <td className="py-2 pr-3">{isEdit?<Select value={editTxValues.paymentMode} onChange={e=>setEditTxValues({...editTxValues,paymentMode:e.target.value})}><option value="">—</option>{PAYMENT_MODES.map(m=><option key={m} value={m}>{m}</option>)}</Select>:(t.paymentMode?<Stamp tone="blue">{t.paymentMode}</Stamp>:"—")}</td>
                     <td className="py-2 pr-3" style={{color:C.lightText}}>
                       {isEdit?<Input value={editTxValues.comment} onChange={e=>setEditTxValues({...editTxValues,comment:e.target.value})}/>:(
@@ -3362,7 +3386,7 @@ function FinancialsView({investors,setInvestors,investments,setInvestments,expen
                         <div className="flex items-center gap-1 justify-end">
                           {isEdit?(<><GhostButton title="Save" onClick={()=>saveTxEdit(t.id)}><Check size={13}/></GhostButton><GhostButton title="Cancel" onClick={()=>setEditTxId(null)}><X size={13}/></GhostButton></>)
                           :deleteTxId===t.id?(<><GhostButton title="Confirm" onClick={()=>removeTx(t.id)}><Check size={13}/></GhostButton><GhostButton title="Cancel" onClick={()=>setDeleteTxId(null)}><X size={13}/></GhostButton></>)
-                          :(<><GhostButton title="Edit" onClick={()=>{setEditTxId(t.id);setEditTxValues({date:t.date,amount:t.amount,paymentMode:t.paymentMode||"",comment:t.comment});}}><Pencil size={13}/></GhostButton><GhostButton title="Delete" onClick={()=>setDeleteTxId(t.id)}><Trash2 size={13}/></GhostButton></>)}
+                          :(<><GhostButton title="Edit" onClick={()=>{setEditTxId(t.id);setEditTxValues({date:t.date,amount:Math.abs(t.amount),type:isRepayment?"repayment":"investment",paymentMode:t.paymentMode||"",comment:t.comment});}}><Pencil size={13}/></GhostButton><GhostButton title="Delete" onClick={()=>setDeleteTxId(t.id)}><Trash2 size={13}/></GhostButton></>)}
                         </div>
                       )}
                     </td>
@@ -4003,7 +4027,10 @@ function FinancialsView({investors,setInvestors,investments,setInvestments,expen
       const [toDate,setToDate]=useState("");
       const entries=useMemo(()=>{
         const all=[
-          ...investments.map(i=>({date:i.date,desc:`Investment — ${i.investorName}`,in:Number(i.amount||0),out:0})),
+          ...investments.map(i=>{
+            const isRepayment=Number(i.amount)<0;
+            return{date:i.date,desc:`${isRepayment?"Repayment to":"Investment —"} ${i.investorName}`,in:isRepayment?0:Number(i.amount||0),out:isRepayment?Math.abs(Number(i.amount||0)):0};
+          }),
           ...income.map(i=>({date:i.date,desc:`Income — ${i.head}${i.receivedFrom?` (from ${i.receivedFrom})`:""}`,in:Number(i.amount||0),out:0})),
           ...expenses.map(e=>({date:e.date,desc:`Expense — ${e.head}${e.paidTo?` (to ${e.paidTo})`:""}`,in:0,out:Number(e.amount||0)})),
         ].filter(e=>e.date);
@@ -4105,7 +4132,7 @@ function FinancialsView({investors,setInvestors,investments,setInvestments,expen
           // Do NOT also list the underlying expense record here: that would
           // show the same money twice (once as the investment credit, once as
           // the expense debit) and double the investor's displayed total.
-          const timeline=invTx.map(t=>({date:t.date,desc:`Investment${t.fromExpenseId?" (covered expense, auto-logged)":""}`,amount:t.amount,paymentMode:t.paymentMode,comment:t.comment}))
+          const timeline=invTx.map(t=>({date:t.date,desc:`${Number(t.amount)<0?"Repayment":"Investment"}${t.fromExpenseId?" (covered expense, auto-logged)":""}`,amount:t.amount,paymentMode:t.paymentMode,comment:t.comment}))
             .sort((a,b)=>new Date(a.date)-new Date(b.date));
           return{...inv,totalInvested,totalCovered,combined:totalInvested,txCount:timeline.length,timeline}; // note: auto-linked investments already fold covered-expense amounts into totalInvested, so "combined" = totalInvested (no separate addition needed, avoids double counting)
         }).sort((a,b)=>b.combined-a.combined);
@@ -4295,7 +4322,7 @@ function FinancialsView({investors,setInvestors,investments,setInvestments,expen
     // double the investor's Total Invested figure.
     const timeline=useMemo(()=>{
       return investments.filter(t=>t.investorId===inv.id)
-        .map(t=>({date:t.date,desc:`Investment${t.fromExpenseId?" (covered expense, auto-logged)":""}`,paymentMode:t.paymentMode,comment:t.comment,amount:Number(t.amount||0)}))
+        .map(t=>({date:t.date,desc:`${Number(t.amount)<0?"Repayment":"Investment"}${t.fromExpenseId?" (covered expense, auto-logged)":""}`,paymentMode:t.paymentMode,comment:t.comment,amount:Number(t.amount||0)}))
         .sort((a,b)=>new Date(a.date)-new Date(b.date));
     },[]);
     const total=timeline.reduce((s,t)=>s+t.amount,0);
@@ -4385,7 +4412,7 @@ function FinancialsView({investors,setInvestors,investments,setInvestments,expen
                     <td className="py-2.5 pr-3" style={{fontFamily:F.mono,color:C.lightText}}>{t.date}</td>
                     <td className="py-2.5 pr-3">{t.desc}</td>
                     <td className="py-2.5 pr-3 hidden sm:table-cell">{t.paymentMode?<Stamp tone="blue">{t.paymentMode}</Stamp>:"—"}</td>
-                    <td className="py-2.5 pr-3 font-bold" style={{fontFamily:F.mono,color:C.zenkyPurple}}>{fmtINR(t.amount)}</td>
+                    <td className="py-2.5 pr-3 font-bold" style={{fontFamily:F.mono,color:Number(t.amount)<0?C.zenkyPink:C.zenkyPurple}}>{Number(t.amount)<0?`− ${fmtINR(Math.abs(t.amount))}`:fmtINR(t.amount)}</td>
                     <td className="py-2.5 pr-3 hidden sm:table-cell" style={{color:C.lightText}}>{t.comment||"—"}</td>
                   </tr>
                 ))}</tbody>
